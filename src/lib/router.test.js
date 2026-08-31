@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildIndex, stopsNear, search, searchWindow, haversineM } from './router.js';
+import { buildIndex, stopsNear, search, searchWindow, haversineM, isLongDistance } from './router.js';
 
 /**
  * A tiny hand-built network. Real enough to exercise transfers, walking and
@@ -30,6 +30,29 @@ function fixture() {
 }
 
 const idx = buildIndex(fixture());
+
+test('a service class is recognised wherever the feed puts it', () => {
+  // Most feeds lead with the class. The Dutch feed appends it to a corridor
+  // description — "Rotterdam Centraal <-> Utrecht Centraal IC2800" — and
+  // reading only the first word classified every Dutch intercity as local,
+  // which left Amsterdam-Rotterdam returning no journeys at all.
+  const long = [
+    { s: 'ICE 29', m: 'rail' },
+    { s: 'FLX20', m: 'rail' },
+    { s: 'AVE', m: 'rail' },
+    { s: 'Rotterdam Centraal <-> Utrecht Centraal IC2800', m: 'rail' },
+    { s: 'Paris-Nord <-> Amsterdam Centraal EST9300', m: 'rail' },
+    { s: 'anything at all', m: 'night_rail' },
+  ];
+  const local = [
+    { s: 'S2', m: 'rail' },
+    { s: 'RE4', m: 'rail' },
+    { s: 'Uitgeest <-> Driebergen-Zeist SPR7400', m: 'rail' },
+    { s: '', m: 'rail' },
+  ];
+  for (const s of long) assert.ok(isLongDistance(s), `${s.s} should be long-distance`);
+  for (const s of local) assert.ok(!isLongDistance(s), `${s.s} should be local`);
+});
 
 test('haversine matches a known distance', () => {
   // Berlin Hbf to Hamburg Hbf is ~255 km.

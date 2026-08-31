@@ -37,15 +37,25 @@ const LONG_DISTANCE_CLASSES = new Set([
   'TGV', 'THA', 'FR', 'AVE', 'IR', 'EST', 'FLX', 'D',
 ]);
 
-function isLongDistance(svc) {
+export function isLongDistance(svc) {
   if (svc.m === 'night_rail') return true;
   const name = (svc.s || '').trim().toUpperCase();
   if (!name) return false;
-  // Split on the first digit or space: "ICE 29" and "FLX20" both yield their
-  // service class. Comparing against a set avoids the regex-escaping traps that
-  // silently produced a pattern matching nothing at all.
-  const prefix = name.split(/[\s\d]/)[0];
-  return LONG_DISTANCE_CLASSES.has(prefix);
+
+  // Most feeds put the class first: "ICE 29", "FLX20", "AVE".
+  if (LONG_DISTANCE_CLASSES.has(name.split(/[\s\d]/)[0])) return true;
+
+  // The Dutch feed instead labels a service by its corridor and appends the
+  // code — "Rotterdam Centraal <-> Utrecht Centraal IC2800" — so reading only
+  // the first word saw "ROTTERDAM" and classified every Dutch intercity as
+  // local. That left Amsterdam-Rotterdam, one of Europe's busiest lines,
+  // returning no journeys at all.
+  for (const token of name.split(/[^A-Z0-9]+/)) {
+    if (!token) continue;
+    const cls = token.replace(/\d+$/, '');
+    if (cls && cls !== token && LONG_DISTANCE_CLASSES.has(cls)) return true;
+  }
+  return false;
 }
 
 export function haversineM(aLat, aLon, bLat, bLon) {
@@ -177,15 +187,14 @@ export function accessStops(index, lat, lon, radiusM = 4000, limit = 8) {
   if (!near.length) return [];
 
   // GTFS route_type marks S-Bahn as rail too, so counting "rail" calls ranks a
-  // busy commuter platform above the main station. What actually distinguishes
-  // a hub is being served by named long-distance services.
-  const LONG_DISTANCE = /^(ICE|IC|EC|ECE|EN|NJ|RJ|RJX|TGV|THA|FR|AVE|IR|D|EST)\b/i;
+  // busy commuter platform above the main station. What distinguishes a hub is
+  // being served by named long-distance services — using the SAME classifier
+  // the search uses, rather than a second copy that can drift out of step.
   const scored = near.map((n) => {
     const calls = index.byStop.get(n.idx) ?? [];
     let longDistance = 0;
     for (const [svcIdx] of calls) {
-      const svc = services[svcIdx];
-      if (svc.m === 'night_rail' || LONG_DISTANCE.test((svc.s || '').trim())) longDistance++;
+      if (isLongDistance(services[svcIdx])) longDistance++;
     }
     return { ...n, name: stops[n.idx].n, longDistance };
   });

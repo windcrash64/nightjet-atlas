@@ -52,6 +52,19 @@
       "notes": "232MB zipped, ~3.7GB unpacked, and there is NO rail-only variant — the file is the whole country including municipal buses, so keepModes filters it during ingest. The permalink 302s to a 60-second presigned S3 URL, so it must be followed each run rather than cached. Switzerland is the hub of European rail: it is where German, French and Italian long-distance services meet. maxRouteType keeps only long-distance and express rail (GTFS extended types 100-105): including Swiss regional and S-Bahn made them 70% of the whole graph and tripled search latency for one small country."
     },
     {
+      "id": "nl-national",
+      "name": "Netherlands rail (NS and partners)",
+      "url": "https://gtfs.openov.nl/gtfs-rt/gtfs-openov-nl.zip",
+      "publisher": "OVapi / Stichting OpenGeo, feed produced by Bliksem Labs B.V.",
+      "licence": "CC0-1.0",
+      "licenceUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "commercialUse": true,
+      "attribution": "Timetable data: OVapi / OpenOV (CC0)",
+      "covers": "NS Intercity, Intercity Direct, Sprinter, and international services via NS International",
+      "keepModes": ["rail", "night_rail", "ferry"],
+      "notes": "213MB zipped and mostly buses, so keepModes filters it during ingest. CC0 imposes no attribution obligation at all; we credit anyway because EU Delegated Regulation 2017/1926 Art. 8(3) requires the source to be shown regardless of licence. Verified 2026-09-01: HTTP 200, 213,222,500 bytes."
+    },
+    {
       "id": "fr-sncf",
       "name": "France long-distance rail (SNCF Voyageurs)",
       "url": "https://www.data.gouv.fr/api/1/datasets/r/9ae758ec-cd7a-40cd-a890-bb3963224942",

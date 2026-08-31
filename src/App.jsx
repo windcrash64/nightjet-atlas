@@ -238,8 +238,8 @@ export default function App() {
         <h1>How do I actually get<br /><em>from here to there?</em></h1>
         <p>
           Real timetables, drawn on the world and ranked by what matters — time,
-          changes, and whether you can sleep through it. Germany, France, Spain and
-          Switzerland today, from the operators&rsquo; own open data.
+          changes, and whether you can sleep through it. Germany, France, Spain, Switzerland
+          and the Netherlands today, from the operators&rsquo; own open data.
         </p>
       </header>
 
@@ -290,8 +290,8 @@ export default function App() {
           {state.status === 'done' && !state.journeys.length && (
             <p className="notice">
               {state.coverage ?? 'No journey found between those places on this data.'}
-              {' '}We currently carry the timetables of Germany, France, Spain and
-              Switzerland, and the long-distance services that run between them
+              {' '}We currently carry the timetables of Germany, France, Spain,
+              Switzerland and the Netherlands, and the long-distance services that run between them
               and their neighbours.
             </p>
           )}
