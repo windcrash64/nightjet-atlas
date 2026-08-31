@@ -9,7 +9,8 @@
  * Run: node scripts/ingest.mjs
  */
 
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, createReadStream } from 'node:fs';
+import { createInterface } from 'node:readline';
 import { execSync } from 'node:child_process';
 import { join } from 'node:path';
 
@@ -130,9 +131,32 @@ async function ingestFeed(feed) {
   }
 
   const routes = new Map();
+  let droppedRoutes = 0;
   for (const r of routeRows) {
     const short = (r.route_short_name || '').trim();
     const long = (r.route_long_name || '').trim();
+
+    // Some national feeds ship the whole country: Switzerland's is 232MB
+    // zipped and 3.7GB unpacked, most of it municipal buses. `keepModes` in
+    // the registry keeps such a feed to the modes an intercity planner uses,
+    // dropping the rest before it reaches the graph.
+    if (feed.keepModes) {
+      const mode = modeFor(r.route_type, short);
+      if (!feed.keepModes.includes(mode)) { droppedRoutes++; continue; }
+    }
+    // A finer filter for feeds that ship a whole country's rail network.
+    // Switzerland's regional and S-Bahn services alone were 381,581 of the
+    // 541,447 services in the graph — 70% of the cost for one small country's
+    // local trains — and they tripled search latency. GTFS extended route types
+    // separate them: 100-105 are long-distance and express, 106+ are regional.
+    // https://gtfs.org/schedule/reference/#routestxt
+    if (feed.maxRouteType != null) {
+      const t = Number(r.route_type);
+      // Applies to the RAIL range only. Ferries are 1000-1099 and would all be
+      // above any sane rail cap, which silently dropped 2,033 Swiss lake boats.
+      if (t >= 100 && t < 200 && t > feed.maxRouteType) { droppedRoutes++; continue; }
+    }
+
     routes.set(r.route_id, {
       short,
       long,
@@ -146,39 +170,59 @@ async function ingestFeed(feed) {
     });
   }
 
+  // Only trips on routes that survived the mode filter. Everything downstream
+  // keys off this, so a dropped route costs nothing further.
   const trips = new Map();
   for (const t of tripRows) {
+    if (!routes.has(t.route_id)) continue;
     trips.set(t.trip_id, { routeId: t.route_id, headsign: (t.trip_headsign || '').trim(), serviceId: t.service_id });
   }
-
-  // stop_times is by far the largest table; stream it rather than parsing whole.
-  const stRaw = readFileSync(join(dir, 'stop_times.txt'), 'utf8');
-  const stLines = stRaw.split('\n');
-  const stHeader = splitLine(stLines[0]).map((h) => h.replace(/^﻿/, '').trim());
-  const iTrip = stHeader.indexOf('trip_id');
-  const iArr = stHeader.indexOf('arrival_time');
-  const iDep = stHeader.indexOf('departure_time');
-  const iStop = stHeader.indexOf('stop_id');
-  const iSeq = stHeader.indexOf('stop_sequence');
-
-  const byTrip = new Map();
-  for (let i = 1; i < stLines.length; i++) {
-    const line = stLines[i];
-    if (!line) continue;
-    const v = splitLine(line);
-    const tripId = v[iTrip];
-    if (!trips.has(tripId)) continue;
-    const stopId = v[iStop];
-    if (!stops.has(stopId)) continue;
-    let arr = byTrip.get(tripId);
-    if (!arr) { arr = []; byTrip.set(tripId, arr); }
-    arr.push({
-      seq: Number(v[iSeq]),
-      stopId,
-      arr: hhmmToMinutes(v[iArr]),
-      dep: hhmmToMinutes(v[iDep]),
-    });
+  if (droppedRoutes) {
+    console.log(`    filtered out ${droppedRoutes.toLocaleString()} routes not in [${feed.keepModes.join(', ')}]`);
   }
+
+  // stop_times is by far the largest table — Switzerland's is 2.87GB, which
+  // readFileSync cannot hold and Node cannot even represent as one string.
+  // Stream it a line at a time and keep only the rows for trips that survived
+  // the mode filter.
+  const byTrip = new Map();
+  await new Promise((resolve, reject) => {
+    const rl = createInterface({
+      input: createReadStream(join(dir, 'stop_times.txt'), { encoding: 'utf8' }),
+      crlfDelay: Infinity,
+    });
+    let iTrip = -1, iArr = -1, iDep = -1, iStop = -1, iSeq = -1;
+    let first = true;
+
+    rl.on('line', (line) => {
+      if (first) {
+        first = false;
+        const h = splitLine(line).map((x) => x.replace(/^﻿/, '').trim());
+        iTrip = h.indexOf('trip_id');
+        iArr = h.indexOf('arrival_time');
+        iDep = h.indexOf('departure_time');
+        iStop = h.indexOf('stop_id');
+        iSeq = h.indexOf('stop_sequence');
+        return;
+      }
+      if (!line) return;
+      const v = splitLine(line);
+      const tripId = v[iTrip];
+      if (!trips.has(tripId)) return;
+      const stopId = v[iStop];
+      if (!stops.has(stopId)) return;
+      let arr = byTrip.get(tripId);
+      if (!arr) { arr = []; byTrip.set(tripId, arr); }
+      arr.push({
+        seq: Number(v[iSeq]),
+        stopId,
+        arr: hhmmToMinutes(v[iArr]),
+        dep: hhmmToMinutes(v[iDep]),
+      });
+    });
+    rl.on('close', resolve);
+    rl.on('error', reject);
+  });
 
   // Collapse to services: one entry per trip, with its ordered calls.
   const services = [];

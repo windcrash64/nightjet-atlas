@@ -38,6 +38,20 @@
       "notes": "Rail-only: all 672 routes are route_type=2, so no filtering is needed. Publisher-direct and keyless. Verified 2026-09-01: HTTP 200, 688,573 bytes. Deliberately bypasses the Spanish NAP, which returns 401 without an API key."
     },
     {
+      "id": "ch-national",
+      "name": "Switzerland rail (SBB and partners)",
+      "url": "https://data.opentransportdata.swiss/de/dataset/timetable-2026-gtfs2020/permalink",
+      "publisher": "Open data platform mobility Switzerland (ODMCH), operated by SBB",
+      "licence": "opentransportdata.swiss terms of use",
+      "licenceUrl": "https://opentransportdata.swiss/en/terms-of-use/",
+      "commercialUse": true,
+      "attribution": "Timetable data: opentransportdata.swiss (SBB)",
+      "covers": "IC, IR, EC, NJ, TGV, ICE, RJX, PE and Swiss regional rail",
+      "keepModes": ["rail", "night_rail", "ferry"],
+      "maxRouteType": 105,
+      "notes": "232MB zipped, ~3.7GB unpacked, and there is NO rail-only variant — the file is the whole country including municipal buses, so keepModes filters it during ingest. The permalink 302s to a 60-second presigned S3 URL, so it must be followed each run rather than cached. Switzerland is the hub of European rail: it is where German, French and Italian long-distance services meet. maxRouteType keeps only long-distance and express rail (GTFS extended types 100-105): including Swiss regional and S-Bahn made them 70% of the whole graph and tripled search latency for one small country."
+    },
+    {
       "id": "fr-sncf",
       "name": "France long-distance rail (SNCF Voyageurs)",
       "url": "https://www.data.gouv.fr/api/1/datasets/r/9ae758ec-cd7a-40cd-a890-bb3963224942",
