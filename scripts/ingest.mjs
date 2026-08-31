@@ -111,9 +111,13 @@ function hhmmToMinutes(t) {
 async function ingestFeed(feed) {
   const dir = await download(feed);
 
-  const agencies = Object.fromEntries(
-    table(dir, 'agency.txt').map((a) => [a.agency_id, a.agency_name]),
-  );
+  // GTFS times are LOCAL TO THE AGENCY, not UTC — 08:51 in the Renfe feed is
+  // 08:51 in Madrid. Every country ingested so far is on CET, so times are
+  // directly comparable; record the zone anyway so the first non-CET feed does
+  // not silently produce journeys that are hours wrong.
+  const agencyRows = table(dir, 'agency.txt');
+  const agencies = Object.fromEntries(agencyRows.map((a) => [a.agency_id, a.agency_name]));
+  const zones = [...new Set(agencyRows.map((a) => (a.agency_timezone || '').trim()).filter(Boolean))];
   const stopRows = table(dir, 'stops.txt');
   const routeRows = table(dir, 'routes.txt');
   const tripRows = table(dir, 'trips.txt');
@@ -195,7 +199,7 @@ async function ingestFeed(feed) {
     });
   }
 
-  return { feed, stops, services };
+  return { feed, stops, services, zones };
 }
 
 async function main() {
@@ -230,10 +234,14 @@ async function main() {
   mkdirSync(OUT, { recursive: true });
   const network = {
     generatedAt: new Date().toISOString(),
-    sources: REGISTRY.feeds.map((f) => ({
-      id: f.id, publisher: f.publisher, licence: f.licence,
-      licenceUrl: f.licenceUrl, attribution: f.attribution,
-    })),
+    sources: REGISTRY.feeds.map((f) => {
+      const part = parts.find((p) => p.feed.id === f.id);
+      return {
+        id: f.id, publisher: f.publisher, licence: f.licence,
+        licenceUrl: f.licenceUrl, attribution: f.attribution,
+        timezones: part?.zones ?? [],
+      };
+    }),
     stops,
     services,
   };
@@ -242,6 +250,31 @@ async function main() {
 
   const modes = {};
   for (const s of services) modes[s.m] = (modes[s.m] || 0) + 1;
+
+  // GTFS times are local to the operating agency. While every feed sits in the
+  // same zone those minutes are directly comparable and the router can treat
+  // them as one clock. The moment a feed from another zone arrives, that stops
+  // being true and journeys spanning the boundary will be silently wrong — so
+  // fail loudly here rather than ship plausible nonsense.
+  // Compare OFFSETS, not zone names: Europe/Berlin, Europe/Madrid and
+  // Europe/Paris are three names for the same clock, and warning about them
+  // would be noise that trains people to ignore the warning that matters.
+  const allZones = [...new Set(parts.flatMap((p) => p.zones))];
+  const offsetOf = (zone) => {
+    try {
+      const d = new Date('2026-07-01T12:00:00Z');   // summer, so DST is in effect
+      const s = d.toLocaleString('en-US', { timeZone: zone, hour12: false, hour: '2-digit' });
+      return Number(s);
+    } catch { return NaN; }
+  };
+  const offsets = [...new Set(allZones.map(offsetOf))];
+  if (offsets.length > 1) {
+    console.error(`\n  ⚠  Feeds span ${offsets.length} DIFFERENT clocks: ${allZones.join(', ')}`);
+    console.error('     GTFS times are agency-local, so minutes from different offsets are');
+    console.error('     NOT comparable. The router must convert before this ships.');
+  } else {
+    console.log(`  timezones: ${allZones.join(', ')} — one clock, times comparable`);
+  }
 
   console.log(`\n  stops:    ${stops.length.toLocaleString()}`);
   console.log(`  services: ${services.length.toLocaleString()}`);
