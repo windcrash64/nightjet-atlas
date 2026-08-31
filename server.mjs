@@ -111,10 +111,14 @@ function buildPlaceIndex(net, index) {
 
     const score = serviceScore(i);
 
-    // City entry: the centroid of everything sharing the first word.
+    // City entry, anchored to its BEST-SERVED station rather than the centroid
+    // of everything sharing a first word. Averaging put "Frankfurt" 60km from
+    // Frankfurt(Main)Hbf, because Frankfurt (Oder) sits 500km east on the
+    // Polish border and dragged the mean into open countryside — so a search
+    // for Frankfurt found no station at all.
     let c = cities.get(cityKey);
     if (!c) { c = { kind: 'city', key: cityKey, name: null, count: 0, lat: 0, lon: 0, score: 0 }; cities.set(cityKey, c); }
-    c.count++; c.lat += s.y; c.lon += s.x; c.score += score;
+    c.count++; c.score += score;
     // Take the city's own name from the leading words of the station name,
     // stopping at the first token that is clearly a station qualifier. Using
     // the whole best-served station name instead labelled the city "Berlin
@@ -122,6 +126,8 @@ function buildPlaceIndex(net, index) {
     if (!c.name || score > (c.bestScore ?? -1)) {
       c.bestScore = score;
       c.name = cityNameFrom(s.n);
+      c.lat = s.y;
+      c.lon = s.x;
     }
 
     // Station entry, but only for stations that actually see long-distance
@@ -139,7 +145,7 @@ function buildPlaceIndex(net, index) {
     kind: 'city', key: c.key,
     name: c.name,
     count: c.count, score: c.score,
-    lat: c.lat / c.count, lon: c.lon / c.count,
+    lat: c.lat, lon: c.lon,
   }));
 
   return [...cityList, ...stations.values()];

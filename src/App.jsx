@@ -290,8 +290,9 @@ export default function App() {
           {state.status === 'done' && !state.journeys.length && (
             <p className="notice">
               {state.coverage ?? 'No journey found between those places on this data.'}
-              {' '}Our timetables currently cover Germany and its long-distance
-              connections into neighbouring countries.
+              {' '}We currently carry the timetables of Germany, France and Spain,
+              and the long-distance services that run between them and their
+              neighbours.
             </p>
           )}
 
