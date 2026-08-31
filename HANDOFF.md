@@ -23,7 +23,7 @@ npm run dev               # UI on :5173, proxies /api to :8080
 ```
 
 ```bash
-npm test              # 48 tests
+npm test              # 50 tests
 node scripts/bench.mjs  # cold search latency per corridor
 ```
 
@@ -31,18 +31,20 @@ node scripts/bench.mjs  # cold search latency per corridor
 
 **Working, verified against real timetables:**
 
-- 131,869 stops and 344,704 services across Germany, France, Spain and
-  Switzerland, ingested from five commercially-licensed feeds (see
-  `data/sources/registry.json`).
+- 189,209 stops and 384,515 services across Germany, France, Spain,
+  Switzerland and the Netherlands, ingested from six commercially-licensed
+  feeds (see `data/sources/registry.json`).
 - RAPTOR-style routing over patterns rather than trips. Median cold search
-  **784ms**, worst 1,408ms, measured by `scripts/bench.mjs`.
+  **780ms**, worst 987ms, measured by `scripts/bench.mjs`.
 - Real 3D globe (Natural Earth vector geometry, no map tiles, no keys), framed
   on the journey by computing the chord it subtends.
 - Spot-checked against reality: Madrid–Barcelona 197min on AVE (real ~2h30),
   Paris–Marseille 184min TGV (real ~3h), Zurich–Milan 197min direct EC (real
-  ~3h20), Zurich–Geneva 173min IC1, Berlin–Munich 250min ICE 29.
-- 48 tests: 13 on the router, 13 on place search, 11 against the real ingested
-  network, plus journey normalisation.
+  ~3h20), Zurich–Geneva 173min IC1, Amsterdam–Rotterdam 43min Eurostar,
+  Berlin–Munich 250min ICE 29.
+- 50 tests: 14 on the router, 13 on place search, 12 against the real ingested
+  network, plus journey normalisation. Every place-search test names a bug that
+  actually shipped.
 
 **Deliberately absent:** prices. Open feeds carry schedules, not fares, and
 there is no free legitimate source of European rail prices. `price` is `null`
@@ -50,15 +52,14 @@ everywhere, enforced by a test.
 
 ## Known gaps
 
-- **Not deployed.** The ~83MB network needs a small VPS (~€5–25/month), not
+- **Not deployed.** The ~95MB network needs a small VPS (~€5–25/month), not
   Cloudflare Pages. The old Nightjet Atlas deployment at
   nightjet-atlas.pages.dev is still live and now shows a different, older app.
 - **No payments.** Decided deliberately: build the product first, monetise with
   evidence. See the research summary below.
-- **Coverage stops at four countries.** Italy is NeTEx-only, Austria needs
+- **Coverage stops at five countries.** Italy is NeTEx-only, Austria needs
   Keycloak OAuth and its host refuses connections, Belgium states no licence.
-  The Netherlands (203MB), Czechia and Poland are verified workable and are
-  the obvious next additions — all need route_type filtering during ingest,
+  Czechia and Poland are verified workable and are the obvious next additions — all need route_type filtering during ingest,
   which the ingester now supports via keepModes and maxRouteType.
 - **Times are agency-local, and every country ingested is on CET**, so they are
   directly comparable today. The ingester fails loudly if a feed from another
@@ -96,7 +97,7 @@ conclusions:
 
 ## Next, in the order I would do it
 
-1. Add the Netherlands and Czechia, using the keepModes/maxRouteType filters.
+1. Add Czechia and Poland, using the keepModes/maxRouteType filters.
 2. Local times instead of UTC.
 3. Deploy: small VPS, nightly ingest, a real domain.
 4. Only then revisit money, with usage data rather than a guess.
