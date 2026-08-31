@@ -126,6 +126,12 @@ export function buildPlaceIndex(network, index, { minStationScore = 3 } = {}) {
     }
   }
 
+  // A station whose name IS the city name is not a second thing to choose —
+  // "Genève" appeared twice, once as the city and once as a station.
+  for (const c of cities.values()) {
+    stations.delete(c.name.toLowerCase());
+  }
+
   return [...cities.values(), ...stations.values()];
 }
 

@@ -99,6 +99,13 @@ test('a quiet halt does not clutter the list', () => {
   assert.ok(!stationNames.includes('Überlingen'));
 });
 
+test('a station named after its city is not offered twice', () => {
+  // Shipped: searching "geneva" returned "Genève" twice — once as the city,
+  // once as a station of the same name — which reads as a bug in the data.
+  const wienEntries = searchPlaces(places, 'wien').filter((p) => p.name === 'Wien');
+  assert.ok(wienEntries.length <= 1, 'a place must appear once, not twice');
+});
+
 test('substring matches do not outrank prefix matches', () => {
   // Shipped: searching "berlin" returned "Überlingen" and "Oberlinxweiler"
   // above Berlin.
