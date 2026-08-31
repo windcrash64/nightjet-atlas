@@ -551,6 +551,21 @@ function reconstruct(index, label, endStop, finalWalkM) {
 
   if (!legs.length) return null;
 
+  // Merge consecutive legs on the SAME service. The search can label a stop
+  // twice along one train's run — at an intermediate stop it improved, then
+  // again further along — which surfaced "ICE 83 > ICE 83" as though it were a
+  // change of train. One train is one leg.
+  for (let i = legs.length - 1; i > 0; i--) {
+    const cur = legs[i], prev = legs[i - 1];
+    if (cur.mode === 'walk' || prev.mode === 'walk') continue;
+    if (!cur.service || cur.service !== prev.service) continue;
+    if (cur.departMin < prev.arriveMin) continue;      // not actually contiguous
+    prev.to = cur.to;
+    prev.arriveMin = cur.arriveMin;
+    prev.intermediateStops = (prev.intermediateStops ?? 0) + 1 + (cur.intermediateStops ?? 0);
+    legs.splice(i, 1);
+  }
+
   if (finalWalkM > 0) {
     const mins = Math.max(1, Math.round(finalWalkM / WALK_METRES_PER_MIN));
     const last = legs[legs.length - 1];
