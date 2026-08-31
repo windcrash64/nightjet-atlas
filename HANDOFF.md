@@ -2,7 +2,8 @@
 
 **Repo:** https://github.com/windcrash64/nightjet-atlas (public, MIT)
 **Local:** `C:/Users/nalba/Documents/nightjet`
-**Status as of 2026-08-31:** built, tested, verified in a browser. Not yet deployed.
+**Live:** https://nightjet-atlas.pages.dev
+**Status as of 2026-08-31:** deployed and verified in production.
 
 ## What it is
 
@@ -30,19 +31,20 @@ Real data confirmed on screen: ÖBB **NJ 40233** Wien Hbf 18:10 → Bologna
 Centrale 06:25, connecting to Trenitalia **FR** to Roma Termini. 69% after dark,
 12h 15m in a bed.
 
-## The one thing left
+## Deployment (done)
 
-**Deploy needs `npx wrangler login`** — interactive browser OAuth that a session
-cannot complete on your behalf. After that:
+Deployed to Cloudflare Pages at https://nightjet-atlas.pages.dev. Verified in
+production: index 200 in 0.56s, `/api/plan` returns 6 itineraries with real
+Nightjets (NJ 237, NJ 40233, NJ 40466) in 1.1s, `/api/geocode` resolves places,
+and validation returns 400 on a malformed body. No secrets or env vars are
+required — every upstream is keyless.
+
+Redeploy with:
 
 ```bash
 npm run build
-npx wrangler pages deploy dist
+npx wrangler pages deploy dist --project-name=nightjet-atlas --branch=main
 ```
-
-`wrangler.toml` is already configured (`pages_build_output_dir = "dist"`,
-`compatibility_date = "2026-08-04"`). No secrets or env vars are required —
-every upstream is keyless.
 
 ## Constraints that shape this project
 

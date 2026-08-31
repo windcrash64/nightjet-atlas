@@ -179,8 +179,6 @@ button.go:disabled { opacity: 0.45; cursor: progress; transform: none; }
 /* formatDuration joins "12h" and "15m" with U+202F so the pair never wraps.
    Overpass draws that glyph generously, so pull it back to a normal word gap —
    otherwise it reads as an accidental double space. */
-.sleep-claim .figure,
-.journey-meta { word-spacing: -0.14em; }
 .sleep-claim .figure { font-size: 1.15em; }
 
 .legs { list-style: none; padding: 0; margin: var(--step-4) 0 0;

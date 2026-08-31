@@ -108,9 +108,13 @@ function Journey({ itinerary, from, to, reducedMotion }) {
             {plus > 0 && <span className="nextday">+{plus}</span>}
           </p>
           <p className="journey-meta">
-            {formatDuration(itinerary.durationSeconds)} ·{' '}
-            {itinerary.transfers === 0 ? 'direct' : `${itinerary.transfers} transfer${itinerary.transfers === 1 ? '' : 's'}`}
-            {dark != null && <> · {Math.round(dark * 100)}% after dark</>}
+            {[
+              formatDuration(itinerary.durationSeconds),
+              itinerary.transfers === 0
+                ? 'direct'
+                : `${itinerary.transfers} transfer${itinerary.transfers === 1 ? '' : 's'}`,
+              dark != null ? `${Math.round(dark * 100)}% after dark` : null,
+            ].filter(Boolean).join('  ·  ')}
           </p>
         </div>
       </div>
