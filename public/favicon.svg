@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" fill="#0b1322"/>
+  <!-- the stringline: a journey climbing through the night -->
+  <path d="M3 27 L21 11" stroke="#f0c674" stroke-width="3.5" stroke-linecap="round" fill="none"/>
+  <path d="M21 11 L29 5" stroke="#e6ecf4" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+  <circle cx="21" cy="11" r="2.2" fill="#0b1322" stroke="#e6ecf4" stroke-width="1.5"/>
+</svg>

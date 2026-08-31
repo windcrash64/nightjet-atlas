@@ -1,0 +1,215 @@
+/*
+ * Nightjet Atlas — visual system.
+ *
+ * Palette follows Cassandre's Nord Express (1927), described as "a polyphony
+ * of greys: the cold smoke, the polished steel of the rods, the velvet depth
+ * of the sky. At their heart, a single red flares."
+ *
+ * So: a wide tonal blue-grey range carries ALL the information, and exactly one
+ * saturated red is reserved for live realtime data. Data honesty becomes the
+ * loudest colour on the page instead of a footnote — which is the right
+ * emphasis for a product whose riders' top complaint is delays.
+ *
+ * Type: Overpass (drawn from the 1945 FHWA highway signage alphabet — real
+ * wayfinding lineage) with Overpass Mono for times and tabular data.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Overpass:ital,wght@0,300;0,400;0,600;0,800;1,400&family=Overpass+Mono:wght@400;600&display=swap');
+
+:root {
+  color-scheme: dark;
+
+  /* The sky, measured. These are the twilight bands, and they are the
+     background of the entire product.
+     Daylight is deliberately held back to a dim slate rather than a bright
+     slab: the night is the subject of this picture, and a glaring day block
+     would steal the emphasis from the hours that matter. */
+  --sky-day: #59677a;
+  --sky-civil: #3d4d63;
+  --sky-nautical: #2a3850;
+  --sky-astronomical: #18243a;
+  --sky-night: #0b1322;
+
+  /* The greys. */
+  --ink: #0a1120;
+  --surface: #111b2c;
+  --surface-raised: #17243a;
+  --line: #26364f;
+  --text: #e6ecf4;
+  --text-dim: #93a3b8;
+  --text-faint: #61718a;
+
+  /* The single red. Reserved for live data. Nothing else may use it.
+     ÖBB's own corporate red, the honest heritage reference. */
+  --live: #e2002a;
+
+  --sleep: #f0c674;   /* the sleeping portion of a journey */
+
+  --step-1: 0.25rem; --step-2: 0.5rem; --step-3: 0.75rem;
+  --step-4: 1rem; --step-6: 1.5rem; --step-8: 2rem; --step-12: 3rem;
+
+  --editorial: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+
+body {
+  margin: 0;
+  background: var(--ink);
+  color: var(--text);
+  font-family: Overpass, ui-sans-serif, system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+h1, h2, h3 { text-wrap: balance; margin: 0; font-weight: 800; letter-spacing: -0.02em; }
+
+/* Every interactive element gets the same focus ring, via box-shadow so it
+   follows border-radius. */
+:where(a, button, input, select, [tabindex]):focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--ink), 0 0 0 4px var(--sky-civil);
+  border-radius: 3px;
+}
+
+.mono { font-family: 'Overpass Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+
+/* ---- shell ---- */
+
+.shell { max-width: 1100px; margin: 0 auto; padding: var(--step-8) var(--step-4) var(--step-12); }
+
+.masthead { padding-block: var(--step-8) var(--step-6); border-bottom: 1px solid var(--line); }
+.masthead h1 { font-size: clamp(2.4rem, 6vw, 4.2rem); line-height: 1.02; }
+.masthead h1 em { font-style: italic; font-weight: 300; color: var(--sky-civil); }
+.masthead p { color: var(--text-dim); max-width: 54ch; margin-top: var(--step-4); font-size: 1.05rem; }
+
+/* ---- search ---- */
+
+.search { display: grid; gap: var(--step-3); margin-block: var(--step-8);
+          grid-template-columns: 1fr 1fr auto; align-items: end; }
+@media (max-width: 720px) { .search { grid-template-columns: 1fr; } }
+
+.field { display: flex; flex-direction: column; gap: var(--step-1); position: relative; }
+.field label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.09em;
+               color: var(--text-faint); font-weight: 600; }
+.field input {
+  background: var(--surface); border: 1px solid var(--line); color: var(--text);
+  padding: var(--step-3) var(--step-4); font: inherit; font-size: 16px; border-radius: 2px;
+}
+.field input::placeholder { color: var(--text-faint); }
+
+button.go {
+  background: var(--text); color: var(--ink); border: 0; font: inherit; font-weight: 600;
+  padding: var(--step-3) var(--step-6); border-radius: 2px; cursor: pointer;
+  transition: transform 160ms var(--editorial);
+}
+@media (hover: hover) { button.go:hover { transform: translateY(-1px); } }
+button.go:disabled { opacity: 0.45; cursor: progress; transform: none; }
+
+.suggestions {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 20; margin-top: 2px;
+  background: var(--surface-raised); border: 1px solid var(--line); max-height: 260px;
+  overflow-y: auto; list-style: none; padding: 0;
+}
+.suggestions button {
+  display: block; width: 100%; text-align: left; background: none; border: 0;
+  color: var(--text); font: inherit; padding: var(--step-2) var(--step-4); cursor: pointer;
+}
+.suggestions button:hover, .suggestions button:focus-visible { background: var(--sky-astronomical); }
+.suggestions .area { color: var(--text-faint); font-size: 0.85em; }
+
+/* ---- stringline ---- */
+
+.stringline { margin: 0 0 var(--step-6); }
+.stringline svg { width: 100%; height: auto; display: block; border: 1px solid var(--line); }
+
+/* On a narrow screen the wide viewBox scales down to roughly 100px tall and
+   every label becomes an unreadable speck, so the component swaps to a taller
+   viewBox below 720px (see Stringline.jsx). The signature visual has to survive
+   the device most people will actually hold. */
+.stringline figcaption { color: var(--text-faint); font-size: 0.82rem; margin-top: var(--step-2);
+                         max-width: 70ch; }
+
+.journey-line { fill: none; stroke: var(--text); stroke-width: 2.5;
+                stroke-linejoin: round; stroke-linecap: round; }
+.journey-line--sleeper { stroke: var(--sleep); stroke-width: 5; }
+.stop-dot { fill: var(--ink); stroke: var(--text); stroke-width: 1.5; }
+
+.sleeper-label { fill: var(--sleep); font-size: 11px; letter-spacing: 0.08em;
+                 font-family: 'Overpass Mono', monospace; font-weight: 600;
+                 paint-order: stroke; stroke: var(--ink); stroke-width: 3px; }
+
+.midnight-rule { stroke: var(--sky-civil); stroke-width: 1; stroke-dasharray: 2 5; opacity: 0.65; }
+.midnight-label { fill: var(--sky-civil); font-size: 10px; letter-spacing: 0.14em;
+                  text-transform: uppercase; font-family: 'Overpass Mono', monospace; }
+.axis { stroke: var(--line); stroke-width: 1; }
+.axis-label { fill: var(--text-faint); font-size: 11px; font-family: 'Overpass Mono', monospace; }
+
+/* Hilfiker's pause: the Swiss railway clock sweeps in 58.5s then HOLDS at 12
+   for ~1.5s awaiting the master impulse — motion that waits rather than eases.
+   The line draws, then rests before the page settles. */
+.journey-line--draw {
+  stroke-dasharray: 4000; stroke-dashoffset: 4000;
+  animation: draw 2.1s var(--editorial) forwards;
+}
+@keyframes draw {
+  0% { stroke-dashoffset: 4000; }
+  72% { stroke-dashoffset: 0; }
+  100% { stroke-dashoffset: 0; }
+}
+
+/* ---- results ---- */
+
+.journey { border: 1px solid var(--line); border-top: 0; padding: var(--step-6) var(--step-4); }
+.journey:first-of-type { border-top: 1px solid var(--line); }
+.journey--overnight { background: linear-gradient(180deg, var(--sky-night), transparent 60%); }
+
+.journey-head { display: flex; flex-wrap: wrap; gap: var(--step-4);
+                align-items: baseline; justify-content: space-between; }
+.journey-times { font-size: clamp(1.6rem, 4vw, 2.4rem); font-weight: 800; letter-spacing: -0.03em; }
+.journey-times .arrow { color: var(--text-faint); font-weight: 300; margin-inline: 0.3em; }
+.journey-times .nextday { font-size: 0.5em; color: var(--sleep); vertical-align: super;
+                          margin-left: 0.15em; font-weight: 600; }
+.journey-meta { color: var(--text-dim); font-size: 0.95rem; }
+
+.sleep-claim { color: var(--sleep); font-weight: 600; margin-top: var(--step-2); }
+/* formatDuration joins "12h" and "15m" with U+202F so the pair never wraps.
+   Overpass draws that glyph generously, so pull it back to a normal word gap —
+   otherwise it reads as an accidental double space. */
+.sleep-claim .figure,
+.journey-meta { word-spacing: -0.14em; }
+.sleep-claim .figure { font-size: 1.15em; }
+
+.legs { list-style: none; padding: 0; margin: var(--step-4) 0 0;
+        border-left: 1px solid var(--line); }
+.leg { padding: var(--step-2) 0 var(--step-2) var(--step-4); position: relative; }
+.leg::before { content: ''; position: absolute; left: -4px; top: 1.05em;
+               width: 7px; height: 7px; background: var(--text-faint); border-radius: 50%; }
+.leg--sleeper::before { background: var(--sleep); }
+.leg--live::before { background: var(--live); }
+.leg-service { font-weight: 600; }
+.leg-where { color: var(--text-dim); font-size: 0.92rem; }
+
+/* The single red flares. */
+.state { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.1em;
+         font-weight: 600; padding: 1px 6px; border: 1px solid currentColor; margin-left: var(--step-2); }
+.state--live { color: var(--live); }
+.state--scheduled { color: var(--text-faint); }
+
+.no-price { color: var(--text-faint); font-size: 0.85rem; }
+.no-price a { color: var(--text-dim); }
+
+.notice { border: 1px solid var(--line); padding: var(--step-4); color: var(--text-dim);
+          background: var(--surface); }
+.notice--error { border-color: var(--live); }
+
+footer { margin-top: var(--step-12); padding-top: var(--step-6);
+         border-top: 1px solid var(--line); color: var(--text-faint); font-size: 0.85rem; }
+footer a { color: var(--text-dim); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
