@@ -22,14 +22,30 @@ const MAX_CONNECTION_WAIT_MIN = 180;   // 3h waiting is already a bad connection
 const MAX_SLEEPER_WAIT_MIN = 300;      // you do wait for a night train, but not all evening
 
 /**
- * Named long-distance services. GTFS route_type marks German S-Bahn as rail
- * exactly like an ICE, so the service designation printed on the train is the
- * only reliable signal of what kind of journey it is.
+ * Named long-distance service classes. GTFS route_type marks German S-Bahn as
+ * rail exactly like an ICE, so the designation printed on the train is the only
+ * reliable signal of what kind of journey it is.
+ *
+ * A Set rather than a regex on purpose: an earlier version of this used a
+ * pattern whose word-boundary escape was mangled into a literal control
+ * character by a shell edit, so it matched NOTHING. Every service silently
+ * counted as local, which blocked every transfer in the app — and the failure
+ * was invisible because a broken regex looks exactly like a working one.
  */
-const LONG_DISTANCE_RE = /^(ICE|IC|EC|ECE|EN|NJ|RJ|RJX|TGV|THA|FR|AVE|IR|D|EST|FLX)/i;
+const LONG_DISTANCE_CLASSES = new Set([
+  'ICE', 'ICN', 'IC', 'EC', 'ECE', 'EN', 'NJ', 'RJ', 'RJX',
+  'TGV', 'THA', 'FR', 'AVE', 'IR', 'EST', 'FLX', 'D',
+]);
 
 function isLongDistance(svc) {
-  return svc.m === 'night_rail' || LONG_DISTANCE_RE.test((svc.s || '').trim());
+  if (svc.m === 'night_rail') return true;
+  const name = (svc.s || '').trim().toUpperCase();
+  if (!name) return false;
+  // Split on the first digit or space: "ICE 29" and "FLX20" both yield their
+  // service class. Comparing against a set avoids the regex-escaping traps that
+  // silently produced a pattern matching nothing at all.
+  const prefix = name.split(/[\s\d]/)[0];
+  return LONG_DISTANCE_CLASSES.has(prefix);
 }
 
 export function haversineM(aLat, aLon, bLat, bLon) {
@@ -169,7 +185,10 @@ export function searchWindow(index, origins, destinations, fromMin, opts = {}) {
   // is the entire cost of a request — leaving it to a loop condition is how a
   // 400ms search became 10s. Six probes gives a useful spread of departures
   // across the window while keeping the worst case predictable.
-  const MAX_PROBES = 6;
+  // Each probe is a full round-based search, so this number IS the request cost.
+  // Four probes across the window still surfaces morning/midday/evening choices;
+  // going to six roughly doubled latency for options that mostly deduped away.
+  const MAX_PROBES = 4;
 
   for (let probe = 0; probe < MAX_PROBES && cursor <= end; probe++) {
     const found = search(index, origins, destinations, cursor, { ...opts, maxJourneys: 6 });
@@ -177,9 +196,11 @@ export function searchWindow(index, origins, destinations, fromMin, opts = {}) {
     if (!found.length) {
       // An empty probe does NOT mean the day is over. Night trains leave late,
       // and a quiet afternoon on a sparse corridor says nothing about the
-      // evening — stopping here is how the sleeper went missing. Skip ahead
-      // and keep looking.
-      cursor += stepMin;
+      // evening — stopping here is how the sleeper went missing. Jump by an
+      // even share of the remaining window so a fixed number of probes still
+      // reaches the late-evening departures at the far end of it.
+      const probesLeft = Math.max(1, MAX_PROBES - probe - 1);
+      cursor += Math.max(stepMin, Math.ceil((end - cursor) / probesLeft));
       continue;
     }
     all.push(...found);
@@ -220,6 +241,22 @@ function rank(journeys, limit) {
   take(journeys.find((j) => j.hasSleeper));               // sleep through it
   take([...journeys].sort((a, b) => a.departMin - b.departMin)[0]); // earliest away
 
+  // Fill the rest, but never with a journey that is beaten outright by one
+  // already shown — same or later departure, and slower, and no simpler. A
+  // 500-minute two-change crawl sitting above a 250-minute direct train makes
+  // the whole list look untrustworthy.
+  const dominated = (j) => [...picked].some((p) =>
+    p !== j
+    && p.departMin >= j.departMin
+    && p.durationMin < j.durationMin
+    && p.transfers <= j.transfers);
+
+  for (const j of [...journeys].sort((a, b) => a.departMin - b.departMin)) {
+    if (picked.size >= limit) break;
+    if (dominated(j)) continue;
+    picked.add(j);
+  }
+  // If pruning left the list short, top it up rather than show three options.
   for (const j of [...journeys].sort((a, b) => a.departMin - b.departMin)) {
     if (picked.size >= limit) break;
     picked.add(j);
@@ -243,7 +280,7 @@ export function search(index, origins, destinations, departAfterMin, opts = {}) 
     const t = departAfterMin + walkMin;
     if (!best.has(o.idx) || t < best.get(o.idx)) {
       best.set(o.idx, t);
-      label.set(o.idx, { kind: 'origin', at: t, walkMin, distanceM: o.distanceM });
+      label.set(o.idx, { kind: 'origin', at: t, walkMin, distanceM: o.distanceM, localRides: 0 });
       frontier.add(o.idx);
     }
   }
@@ -269,7 +306,11 @@ export function search(index, origins, destinations, departAfterMin, opts = {}) 
         // while producing journeys nobody would choose. So: long-distance
         // services are always boardable; local ones only for the first two
         // rides, which is enough for "local train to the hub, then intercity".
-        if (round > 1 && !isLongDistance(svc)) continue;
+        // A journey may use local services to reach the intercity network and
+        // to leave it, but not to hop across the country. Without this the
+        // frontier explodes across every commuter line: measured at 515 stops
+        // growing to 9,752 in one round, and 1,196ms of a 1,222ms search.
+        if (!isLongDistance(svc) && label.get(stopIdx)?.localRides >= 1) continue;
 
         // Can we make it? First boarding needs no transfer buffer.
         const needBuffer = label.get(stopIdx)?.kind === 'ride' ? MIN_TRANSFER_MIN : 0;
@@ -291,18 +332,32 @@ export function search(index, origins, destinations, departAfterMin, opts = {}) 
           best.set(toStop, arr);
           label.set(toStop, {
             kind: 'ride', at: arr, svcIdx, fromCall: callIdx, toCall: ci, from: stopIdx,
+            localRides: (label.get(stopIdx)?.localRides ?? 0) + (isLongDistance(svc) ? 0 : 1),
           });
           nextFrontier.add(toStop);
 
           if (destSet.has(toStop)) {
-            arrivals.push({ stop: toStop, at: arr, rounds: round + 1 });
+            // Reconstruct immediately. `label` is overwritten whenever the
+            // search finds a better way to a stop, so rebuilding after the loop
+            // yields only the last-written path — which is why a destination
+            // reached twice (say by a fast train and by an overnight one)
+            // produced a single journey instead of both.
+            const j = reconstruct(index, label, toStop, destSet.get(toStop));
+            if (j) arrivals.push(j);
           }
         }
       }
     }
 
     // Walking transfers between nearby stations, after each round of riding.
-    for (const stopIdx of [...nextFrontier]) {
+    //
+    // Only walk from a stop we actually RODE to. Two consecutive walks are not
+    // a transfer, and allowing them made the frontier balloon from 515 stops to
+    // 9,752 in a single round — measured as 1,196ms of a 1,222ms search, since
+    // every walk-reached stop then got scanned for boardings next round.
+    const walkedTo = [];
+    for (const stopIdx of nextFrontier) {
+      if (label.get(stopIdx)?.kind !== 'ride') continue;
       const near = index.footpaths.get(stopIdx);
       if (!near) continue;
       const from = best.get(stopIdx);
@@ -311,26 +366,18 @@ export function search(index, origins, destinations, departAfterMin, opts = {}) 
         const known = best.get(toStop);
         if (known != null && t >= known) continue;
         best.set(toStop, t);
-        label.set(toStop, { kind: 'walk', at: t, from: stopIdx, mins });
-        nextFrontier.add(toStop);
+        label.set(toStop, { kind: 'walk', at: t, from: stopIdx, mins, localRides: label.get(stopIdx)?.localRides ?? 0 });
+        walkedTo.push(toStop);
       }
     }
+    for (const s of walkedTo) nextFrontier.add(s);
 
     frontier = nextFrontier;
   }
 
-  // Reconstruct the best arrival at each destination stop.
-  const seenStop = new Set();
-  const candidates = [];
-  arrivals.sort((a, b) => a.at - b.at || a.rounds - b.rounds);
-  for (const a of arrivals) {
-    if (seenStop.has(a.stop)) continue;
-    seenStop.add(a.stop);
-    const j = reconstruct(index, label, a.stop, destSet.get(a.stop));
-    if (j) candidates.push(j);
-  }
-
-  return dedupe(candidates).slice(0, maxJourneys);
+  // `arrivals` already holds journeys, reconstructed as each one reached a
+  // destination. dedupe() collapses those that ride the same services.
+  return dedupe(arrivals).slice(0, maxJourneys);
 }
 
 /**
@@ -338,15 +385,41 @@ export function search(index, origins, destinations, departAfterMin, opts = {}) 
  * even when they end at different platforms of the same city. Without this the
  * results list shows the same ICE four times with a different final S-Bahn hop.
  */
+/**
+ * Rejects journeys with a wait no traveller would accept.
+ *
+ * The per-boarding check bounds the gap the search knew about at the time, but
+ * a label can be improved after the fact so the wait in the FINAL itinerary can
+ * end up longer. Checking the reconstructed journey is the only place the real
+ * gap between two consecutive legs is unambiguous. (Caught by a test: a
+ * Frankfurt-Vienna result sat at Ulm Hbf for 187 minutes.)
+ */
+function hasUnreasonableWait(journey) {
+  const rides = journey.legs.filter((l) => l.mode !== 'walk');
+  for (let i = 1; i < rides.length; i++) {
+    const wait = rides[i].departMin - rides[i - 1].arriveMin;
+    const boardingSleeper = rides[i].mode === 'night_rail';
+    if (wait > (boardingSleeper ? MAX_SLEEPER_WAIT_MIN : MAX_CONNECTION_WAIT_MIN)) return true;
+  }
+  return false;
+}
+
 function dedupe(journeys) {
   // Identity is the long-distance spine: the services you actually ride for a
   // meaningful time. Two results that both ride ICE 29 at 08:36 are the same
   // journey to a traveller even if one ends a stop further on.
   const best = new Map();
   for (const j of journeys) {
+    if (hasUnreasonableWait(j)) continue;
+    // Identity is the sequence of services ridden and roughly when. Keying on
+    // the exact departure minute made the SAME physical train appear several
+    // times, because different probes board it at different stations and the
+    // first leg's departure then differs by a few minutes. Bucketing to 20
+    // minutes collapses those while still separating an hourly service's
+    // genuinely distinct departures.
     const spine = j.legs
       .filter((l) => l.mode !== 'walk' && (l.arriveMin - l.departMin) >= 12)
-      .map((l) => `${l.service ?? l.mode}@${l.departMin}`)
+      .map((l) => `${l.service ?? l.mode}@${Math.round(l.departMin / 20)}`)
       .join('>');
     if (!spine) continue;
     const prev = best.get(spine);
