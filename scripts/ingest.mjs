@@ -71,6 +71,22 @@ function table(dir, name) {
   return parseCsv(readFileSync(p, 'utf8'));
 }
 
+/**
+ * Which of a route's two names a traveller would actually recognise.
+ *
+ * A named service class ("ICE 29", "AVE", "TGV", "NJ 40233") is what is printed
+ * on the train and on the departure board, so it always wins. Otherwise prefer
+ * a corridor description ("Marseille - Toulon - Hyeres") over an internal line
+ * code ("C30"), which means nothing to anyone outside the operator.
+ */
+const SERVICE_CLASS = /^(ICE|ICN|IC|ECE|EC|EN|NJ|RJX|RJ|TGV|THA|FR|AVE|AVLO|ALVIA|AVANT|IR|EST|FLX|MD|REG)\b/i;
+
+function pickLabel(short, long) {
+  if (short && SERVICE_CLASS.test(short)) return short;
+  if (long && long.length <= 48) return long;
+  return short || long || null;
+}
+
 /** GTFS route_type -> our mode vocabulary. https://gtfs.org/schedule/reference/#routestxt */
 function modeFor(routeType, shortName = '') {
   const t = Number(routeType);
@@ -112,9 +128,15 @@ async function ingestFeed(feed) {
   const routes = new Map();
   for (const r of routeRows) {
     const short = (r.route_short_name || '').trim();
+    const long = (r.route_long_name || '').trim();
     routes.set(r.route_id, {
       short,
-      long: (r.route_long_name || '').trim(),
+      long,
+      // The label a traveller would recognise. German feeds put the service
+      // designation in route_short_name ("ICE 29"); SNCF puts an internal line
+      // code there ("C30", "P53") and the actual corridor in route_long_name
+      // ("Marseille - Toulon - Hyeres"), which is far more use on a results row.
+      label: pickLabel(short, long),
       mode: modeFor(r.route_type, short),
       operator: agencies[r.agency_id] || null,
     });
@@ -164,7 +186,7 @@ async function ingestFeed(feed) {
     if (!route) continue;
     services.push({
       id: tripId,
-      service: route.short || trip.headsign || route.long,
+      service: route.label || trip.headsign || null,
       mode: route.mode,
       operator: route.operator,
       headsign: trip.headsign || null,

@@ -235,8 +235,8 @@ export default function App() {
         <h1>How do I actually get<br /><em>from here to there?</em></h1>
         <p>
           Real timetables, drawn on the world and ranked by what matters — time,
-          changes, and whether you can sleep through it. Today that means trains
-          across Germany and its long-distance links into its neighbours.
+          changes, and whether you can sleep through it. Germany, France and
+          Spain today, from the operators&rsquo; own open data.
         </p>
       </header>
 
