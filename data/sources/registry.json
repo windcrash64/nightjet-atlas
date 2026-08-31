@@ -1,0 +1,43 @@
+{
+  "_comment": "Feed registry. Every entry must carry its licence and the attribution string that licence requires. EU Delegated Regulation 2017/1926 Art. 8(3) separately requires we display the source AND the last-update time of static data, regardless of licence — so `attribution` is not optional even for public-domain feeds.",
+  "feeds": [
+    {
+      "id": "de-longdistance",
+      "name": "Germany long-distance rail",
+      "url": "https://download.gtfs.de/germany/fv_free/latest.zip",
+      "publisher": "gtfs.de (data provided by DELFI e.V.)",
+      "licence": "CC-BY-4.0",
+      "licenceUrl": "https://creativecommons.org/licenses/by/4.0/",
+      "commercialUse": true,
+      "attribution": "Timetable data: DELFI e.V. / gtfs.de (CC BY 4.0), © OpenStreetMap contributors",
+      "covers": "ICE, IC, EC, ECE, EN (EuroNight), RJ (RailJet) — includes ÖBB, SNCF, SBB, PKP, ČD, MÁV, NS as operating agencies",
+      "notes": "Free tier covers the next 30 days. Verified 2026-08-31: 96 routes, 5,354 trips, 1,222 stops, 7 EuroNight routes."
+    },
+    {
+      "id": "de-regional",
+      "name": "Germany regional rail",
+      "url": "https://download.gtfs.de/germany/rv_free/latest.zip",
+      "publisher": "gtfs.de (data provided by DELFI e.V.)",
+      "licence": "CC-BY-4.0",
+      "licenceUrl": "https://creativecommons.org/licenses/by/4.0/",
+      "commercialUse": true,
+      "attribution": "Timetable data: DELFI e.V. / gtfs.de (CC BY 4.0), © OpenStreetMap contributors",
+      "covers": "RB, RE, IRE, S-Bahn and non-federal railways",
+      "notes": "~12MB. Needed so a journey can reach places the long-distance network does not serve."
+    }
+  ],
+  "_deliberatelyExcluded": [
+    {
+      "id": "de-local",
+      "reason": "272MB of buses, trams and subways. Out of scope for an intercity A→B planner, and it would dominate the graph. Revisit only for first/last-mile."
+    },
+    {
+      "id": "transitous",
+      "reason": "api.transitous.org prohibits commercial use and requires consuming projects be open source. Their feed CATALOGUE is CC0 and we may use it as a roadmap, but we must never depend on their servers."
+    },
+    {
+      "id": "de-realtime",
+      "reason": "DELFI's GTFS-RT realtime feed is CC-BY-SA (share-alike), unlike the CC-BY static feed. Keep it out until it can live in an isolated pipeline stage where share-alike cannot reach the rest of the data."
+    }
+  ]
+}

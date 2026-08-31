@@ -1,8 +1,9 @@
 node_modules/
 dist/
+data/cache/
+src/data/network.json
 .wrangler/
 .dev.vars
-*.local
-.DS_Store
 .claude/
+*.local
 prod.json

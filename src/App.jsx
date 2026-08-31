@@ -1,46 +1,47 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import Stringline from './components/Stringline.jsx';
-import { normaliseItinerary, isOvernightJourney, formatDuration } from './lib/journey.js';
-import { skyAlongJourney, darkFraction } from './lib/sun.js';
+import Globe from './components/Globe.jsx';
 
-/** Places we can prove have a real sleeper, from a live scan on 2026-08-31. */
-const SEEDS = [
-  { label: 'Vienna → Rome', from: { name: 'Vienna', lat: 48.1852, lon: 16.376 }, to: { name: 'Rome', lat: 41.901, lon: 12.501 } },
-  { label: 'Prague → Florence', from: { name: 'Prague', lat: 50.083, lon: 14.4356 }, to: { name: 'Florence', lat: 43.7764, lon: 11.248 } },
-  { label: 'Venice → Warsaw', from: { name: 'Venice', lat: 45.4408, lon: 12.3155 }, to: { name: 'Warsaw', lat: 52.2288, lon: 21.003 } },
-  { label: 'Zagreb → Zurich', from: { name: 'Zagreb', lat: 45.8046, lon: 15.9789 }, to: { name: 'Zurich', lat: 47.3779, lon: 8.5403 } },
-  { label: 'Ljubljana → Budapest', from: { name: 'Ljubljana', lat: 46.0577, lon: 14.5058 }, to: { name: 'Budapest', lat: 47.5005, lon: 19.0844 } },
-];
+/* ---------- formatting ---------- */
 
-function useReducedMotion() {
-  const [reduced, setReduced] = useState(false);
-  useEffect(() => {
-    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
-    const on = () => setReduced(mq.matches);
-    on();
-    mq.addEventListener('change', on);
-    return () => mq.removeEventListener('change', on);
-  }, []);
-  return reduced;
+const MODE_LABEL = {
+  night_rail: 'Night train', rail: 'Train', coach: 'Coach',
+  ferry: 'Ferry', metro: 'Metro', tram: 'Tram', walk: 'Walk',
+};
+
+function hhmm(min) {
+  if (min == null) return '--:--';
+  const r = ((min % 1440) + 1440) % 1440;
+  return `${String(Math.floor(r / 60)).padStart(2, '0')}:${String(r % 60).padStart(2, '0')}`;
 }
 
-function PlaceField({ id, label, value, onChange, onPick, placeholder }) {
-  const [suggestions, setSuggestions] = useState([]);
+function dayOffset(min) {
+  return Math.floor(min / 1440);
+}
+
+function dur(min) {
+  if (min == null) return 'unavailable';
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m`;
+}
+
+/* ---------- place search ---------- */
+
+function PlaceField({ id, label, value, place, onText, onPick, placeholder }) {
   const [open, setOpen] = useState(false);
+  const [hits, setHits] = useState([]);
   const timer = useRef();
 
   useEffect(() => {
     clearTimeout(timer.current);
-    if (!value || value.length < 2 || !open) return;
+    if (!open || value.trim().length < 2) { setHits([]); return; }
     timer.current = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/geocode?q=${encodeURIComponent(value)}`);
-        const data = await res.json();
-        setSuggestions(data.places ?? []);
-      } catch {
-        setSuggestions([]);
-      }
-    }, 260);
+        const r = await fetch(`/api/places?q=${encodeURIComponent(value.trim())}`);
+        const d = await r.json();
+        setHits(d.places ?? []);
+      } catch { setHits([]); }
+    }, 180);
     return () => clearTimeout(timer.current);
   }, [value, open]);
 
@@ -48,24 +49,19 @@ function PlaceField({ id, label, value, onChange, onPick, placeholder }) {
     <div className="field">
       <label htmlFor={id}>{label}</label>
       <input
-        id={id}
-        value={value}
-        placeholder={placeholder}
-        autoComplete="off"
-        onChange={(e) => { onChange(e.target.value); setOpen(true); }}
+        id={id} value={value} placeholder={placeholder} autoComplete="off"
+        onChange={(e) => { onText(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
         onBlur={() => setTimeout(() => setOpen(false), 160)}
       />
-      {open && suggestions.length > 0 && (
+      {place && !open && <span className="field-note">{place.stops} stops</span>}
+      {open && hits.length > 0 && (
         <ul className="suggestions">
-          {suggestions.map((p, i) => (
+          {hits.map((p, i) => (
             <li key={`${p.name}-${i}`}>
-              <button
-                type="button"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => { onPick(p); setOpen(false); setSuggestions([]); }}
-              >
+              <button type="button" onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => { onPick(p); setOpen(false); setHits([]); }}>
                 {p.name}
-                {p.area && <span className="area"> · {p.area}</span>}
               </button>
             </li>
           ))}
@@ -75,225 +71,240 @@ function PlaceField({ id, label, value, onChange, onPick, placeholder }) {
   );
 }
 
-function hhmm(iso) {
-  if (!iso) return '--:--';
-  return new Date(iso).toISOString().slice(11, 16);
-}
+/* ---------- one option in the list ---------- */
 
-function dayOffset(startIso, endIso) {
-  if (!startIso || !endIso) return 0;
-  const a = new Date(startIso), b = new Date(endIso);
-  return Math.round((Date.UTC(b.getUTCFullYear(), b.getUTCMonth(), b.getUTCDate())
-    - Date.UTC(a.getUTCFullYear(), a.getUTCMonth(), a.getUTCDate())) / 86400000);
-}
-
-function Journey({ itinerary, from, to, reducedMotion }) {
-  const overnight = isOvernightJourney(itinerary);
-  const plus = dayOffset(itinerary.departure, itinerary.arrival);
-
-  const dark = useMemo(() => {
-    const s = Date.parse(itinerary.departure), e = Date.parse(itinerary.arrival);
-    if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s) return null;
-    return darkFraction(skyAlongJourney(s, e, from, to, 120));
-  }, [itinerary, from, to]);
+function Option({ journey, index, active, badge, onSelect }) {
+  const rides = journey.legs.filter((l) => l.mode !== 'walk');
+  const plus = dayOffset(journey.arriveMin) - dayOffset(journey.departMin);
 
   return (
-    <article className={`journey${overnight ? ' journey--overnight' : ''}`}>
-      <div className="journey-head">
-        <div>
-          <p className="journey-times mono">
-            {hhmm(itinerary.departure)}
-            <span className="arrow">→</span>
-            {hhmm(itinerary.arrival)}
-            {plus > 0 && <span className="nextday">+{plus}</span>}
-          </p>
-          <p className="journey-meta">
-            {[
-              formatDuration(itinerary.durationSeconds),
-              itinerary.transfers === 0
-                ? 'direct'
-                : `${itinerary.transfers} transfer${itinerary.transfers === 1 ? '' : 's'}`,
-              dark != null ? `${Math.round(dark * 100)}% after dark` : null,
-            ].filter(Boolean).join('  ·  ')}
-          </p>
-        </div>
-      </div>
+    <button
+      type="button"
+      className={`option${active ? ' option--active' : ''}${journey.hasSleeper ? ' option--sleeper' : ''}`}
+      onClick={onSelect}
+      aria-pressed={active}
+    >
+      <span className="option-rank mono">{String(index + 1).padStart(2, '0')}</span>
 
-      {overnight && (
-        <p className="sleep-claim">
-          <span className="figure mono">{formatDuration(itinerary.sleeperSeconds)}</span>{' '}
-          in a bed on {itinerary.sleeperServices.map((s) => s.service).filter(Boolean).join(', ')}
-          {plus > 0 && ' — you arrive the next morning without paying for a hotel night'}
-        </p>
-      )}
+      <span className="option-body">
+        {badge && <span className="option-badge">{badge}</span>}
+        <span className="option-times mono">
+          {hhmm(journey.departMin)}
+          <span className="option-arrow">→</span>
+          {hhmm(journey.arriveMin)}
+          {plus > 0 && <sup className="option-plus">+{plus}</sup>}
+        </span>
+        <span className="option-chain">
+          {rides.map((l, i) => (
+            <span key={i} className={`chip chip--${l.mode}`}>{l.service || MODE_LABEL[l.mode]}</span>
+          ))}
+        </span>
+      </span>
 
-      <Stringline itinerary={itinerary} from={from} to={to} reducedMotion={reducedMotion} />
-
-      <ul className="legs">
-        {itinerary.legs.filter((l) => l.isTransit).map((leg, i) => (
-          <li key={i} className={`leg${leg.isSleeper ? ' leg--sleeper' : ''}${leg.sourceState === 'live' ? ' leg--live' : ''}`}>
-            <p>
-              <span className="leg-service">{leg.service ?? leg.mode.toLowerCase().replace(/_/g, ' ')}</span>
-              {leg.operator && <span className="leg-where"> · {leg.operator}</span>}
-              <span className={`state state--${leg.sourceState}`}>{leg.sourceState}</span>
-            </p>
-            <p className="leg-where mono">
-              {hhmm(leg.departure)} {leg.from.name} → {hhmm(leg.arrival)} {leg.to.name}
-            </p>
-          </li>
-        ))}
-      </ul>
-
-      <p className="no-price">
-        No fare shown: open transit data carries schedules, not prices.
-        {itinerary.legs.find((l) => l.fareUrl) && (
-          <> Buy from{' '}
-            <a href={itinerary.legs.find((l) => l.fareUrl).fareUrl} target="_blank" rel="noopener noreferrer">
-              the operator
-            </a>.
-          </>
+      <span className="option-right">
+        <span className="option-dur mono">{dur(journey.durationMin)}</span>
+        <span className="option-transfers">
+          {journey.transfers === 0 ? 'direct' : `${journey.transfers} change${journey.transfers > 1 ? 's' : ''}`}
+        </span>
+        {journey.hasSleeper && (
+          <span className="option-sleep">{dur(journey.sleeperMin)} asleep</span>
         )}
-      </p>
-    </article>
+      </span>
+    </button>
   );
 }
 
+/* ---------- detail for the selected option ---------- */
+
+function Detail({ journey }) {
+  if (!journey) return null;
+  return (
+    <div className="detail">
+      <ol className="legs">
+        {journey.legs.map((l, i) => (
+          <li key={i} className={`leg leg--${l.mode}`}>
+            <div className="leg-time mono">
+              <span>{hhmm(l.departMin)}</span>
+              <span className="leg-time-arr">{hhmm(l.arriveMin)}</span>
+            </div>
+            <div className="leg-main">
+              <p className="leg-head">
+                <span className="leg-service">{l.service || MODE_LABEL[l.mode]}</span>
+                {l.operator && <span className="leg-op"> · {l.operator}</span>}
+                {l.mode === 'night_rail' && <span className="leg-tag">sleeper</span>}
+              </p>
+              <p className="leg-stops">
+                {l.from.name} → {l.to.name}
+                {l.intermediateStops > 0 && (
+                  <span className="leg-via"> · {l.intermediateStops} stops on the way</span>
+                )}
+              </p>
+            </div>
+          </li>
+        ))}
+      </ol>
+      <p className="no-fare">
+        No price shown. These are published timetables, not ticket inventory —
+        fares live with the operator, and we will not invent one.
+      </p>
+    </div>
+  );
+}
+
+/* ---------- app ---------- */
+
+const START = {
+  from: { name: 'Berlin Hbf', lat: 52.5118, lon: 13.3782, stops: 102 },
+  to: { name: 'München Hbf', lat: 48.1402, lon: 11.5600, stops: 60 },
+};
+
 export default function App() {
-  const reducedMotion = useReducedMotion();
-  const [fromText, setFromText] = useState('Vienna');
-  const [toText, setToText] = useState('Rome');
-  const [from, setFrom] = useState({ name: 'Vienna', lat: 48.1852, lon: 16.376 });
-  const [to, setTo] = useState({ name: 'Rome', lat: 41.901, lon: 12.501 });
-  const [state, setState] = useState({ status: 'idle', itineraries: [] });
+  const [fromText, setFromText] = useState(START.from.name);
+  const [toText, setToText] = useState(START.to.name);
+  const [from, setFrom] = useState(START.from);
+  const [to, setTo] = useState(START.to);
+  const [departHour, setDepartHour] = useState(8);
+  const [state, setState] = useState({ status: 'idle', journeys: [] });
+  const [selected, setSelected] = useState(0);
+  const [reduced, setReduced] = useState(false);
 
-  const search = useCallback(async (origin = from, dest = to) => {
-    setState({ status: 'loading', itineraries: [] });
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const on = () => setReduced(mq.matches);
+    on(); mq.addEventListener('change', on);
+    return () => mq.removeEventListener('change', on);
+  }, []);
 
-    // Night trains only appear if you ask from the afternoon — query at 22:00
-    // and every sleeper has already left. Verified: a 16:00 query surfaces all
-    // three Vienna->Rome Nightjets; a 22:00 query surfaces none.
-    const when = new Date();
-    when.setUTCHours(15, 0, 0, 0);
-    if (when.getTime() < Date.now()) when.setUTCDate(when.getUTCDate() + 1);
-
+  const run = useCallback(async (o = from, d = to, h = departHour) => {
+    setState({ status: 'loading', journeys: [] });
+    setSelected(0);
     try {
-      const res = await fetch('/api/plan', {
+      const r = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          from: { lat: origin.lat, lon: origin.lon },
-          to: { lat: dest.lat, lon: dest.lon },
-          departAt: when.toISOString(),
-          modes: ['rail', 'bus', 'ferry', 'metro'],
-        }),
+        body: JSON.stringify({ from: { lat: o.lat, lon: o.lon }, to: { lat: d.lat, lon: d.lon }, departHour: h }),
       });
-      const data = await res.json();
-      if (!res.ok) {
-        setState({ status: 'error', message: data.error ?? 'Routing failed.', itineraries: [] });
-        return;
-      }
-      const itineraries = (data.itineraries ?? []).map(normaliseItinerary);
-      itineraries.sort((a, b) => Number(isOvernightJourney(b)) - Number(isOvernightJourney(a)));
-      setState({ status: 'done', itineraries, fetchedAt: data.fetchedAt });
+      const data = await r.json();
+      if (!r.ok) { setState({ status: 'error', message: data.error, journeys: [] }); return; }
+      setState({
+        status: 'done', journeys: data.journeys ?? [],
+        coverage: data.coverage, sources: data.sources,
+        generatedAt: data.generatedAt, tookMs: data.tookMs,
+      });
     } catch {
-      setState({ status: 'error', message: 'Could not reach the routing service.', itineraries: [] });
+      setState({ status: 'error', message: 'The search service is not responding.', journeys: [] });
     }
-  }, [from, to]);
+  }, [from, to, departHour]);
 
-  useEffect(() => { search(); /* eslint-disable-next-line */ }, []);
+  useEffect(() => { run(); /* eslint-disable-next-line */ }, []);
 
-  const overnightCount = state.itineraries.filter(isOvernightJourney).length;
+  // Which options deserve a badge. Computed from the set, not hardcoded.
+  const badges = useMemo(() => {
+    const j = state.journeys;
+    if (!j.length) return {};
+    const out = {};
+    const fastest = j.reduce((a, b) => (b.durationMin < a.durationMin ? b : a));
+    out[j.indexOf(fastest)] = 'Fastest';
+    const direct = j.filter((x) => x.transfers === 0)
+      .sort((a, b) => a.durationMin - b.durationMin)[0];
+    if (direct && !out[j.indexOf(direct)]) out[j.indexOf(direct)] = 'No changes';
+    const sleeper = j.find((x) => x.hasSleeper);
+    if (sleeper && !out[j.indexOf(sleeper)]) out[j.indexOf(sleeper)] = 'Sleep through it';
+    return out;
+  }, [state.journeys]);
+
+  const active = state.journeys[selected] ?? null;
 
   return (
-    <div className="shell">
+    <div className="app">
       <header className="masthead">
-        <h1>Some journeys<br />happen <em>while you sleep.</em></h1>
+        <h1>How do I actually get<br /><em>from here to there?</em></h1>
         <p>
-          Europe still runs night trains. Flight search cannot show you why that
-          matters, because a bed is not a price and darkness is not a duration.
-          This draws the journey against the real sky instead.
+          Every train, coach and ferry we can see, drawn on the world and ranked
+          by what matters — time, changes, and whether you can sleep through it.
         </p>
       </header>
 
-      <form className="search" onSubmit={(e) => { e.preventDefault(); search(); }}>
+      <form className="search" onSubmit={(e) => { e.preventDefault(); run(); }}>
         <PlaceField
-          id="from" label="From" value={fromText} placeholder="Any station, city or address"
-          onChange={setFromText}
-          onPick={(p) => { setFrom({ name: p.name, lat: p.lat, lon: p.lon }); setFromText(p.name); }}
+          id="from" label="From" value={fromText} place={from}
+          placeholder="Any station or city"
+          onText={setFromText}
+          onPick={(p) => { setFrom(p); setFromText(p.name); run(p, to, departHour); }}
         />
         <PlaceField
-          id="to" label="To" value={toText} placeholder="Where you want to wake up"
-          onChange={setToText}
-          onPick={(p) => { setTo({ name: p.name, lat: p.lat, lon: p.lon }); setToText(p.name); }}
+          id="to" label="To" value={toText} place={to}
+          placeholder="Where you're going"
+          onText={setToText}
+          onPick={(p) => { setTo(p); setToText(p.name); run(from, p, departHour); }}
         />
+        <div className="field field--time">
+          <label htmlFor="depart">Leave after</label>
+          <select id="depart" value={departHour}
+                  onChange={(e) => { const h = Number(e.target.value); setDepartHour(h); run(from, to, h); }}>
+            {Array.from({ length: 24 }, (_, h) => (
+              <option key={h} value={h}>{String(h).padStart(2, '0')}:00</option>
+            ))}
+          </select>
+        </div>
         <button className="go" type="submit" disabled={state.status === 'loading'}>
-          {state.status === 'loading' ? 'Searching…' : 'Draw the journey'}
+          {state.status === 'loading' ? 'Searching…' : 'Find the ways'}
         </button>
       </form>
 
-      <nav aria-label="Routes with a verified sleeper" style={{ marginBottom: '2rem' }}>
-        {SEEDS.map((s) => (
-          <button
-            key={s.label} type="button"
-            style={{
-              background: 'none', border: '1px solid var(--line)', color: 'var(--text-dim)',
-              font: 'inherit', fontSize: '0.85rem', padding: '4px 10px', marginRight: '6px',
-              marginBottom: '6px', cursor: 'pointer', borderRadius: 2,
-            }}
-            onClick={() => {
-              setFrom(s.from); setTo(s.to);
-              setFromText(s.from.name); setToText(s.to.name);
-              search(s.from, s.to);
-            }}
-          >
-            {s.label}
-          </button>
-        ))}
-      </nav>
+      <div className="workspace">
+        <div className="map-pane">
+          <Globe journeys={state.journeys} activeIndex={selected} reduced={reduced} />
+          {active && (
+            <div className="map-caption">
+              <strong>{active.legs[0].from.name}</strong> → <strong>{active.legs[active.legs.length - 1].to.name}</strong>
+            </div>
+          )}
+        </div>
 
-      {state.status === 'loading' && <p className="notice">Asking the timetables…</p>}
+        <div className="list-pane">
+          {state.status === 'loading' && <p className="notice">Reading the timetables…</p>}
 
-      {state.status === 'error' && (
-        <p className="notice notice--error">
-          {state.message} Nothing is shown rather than something invented.
-        </p>
-      )}
+          {state.status === 'error' && (
+            <p className="notice notice--error">{state.message}</p>
+          )}
 
-      {state.status === 'done' && state.itineraries.length === 0 && (
-        <p className="notice">
-          No journey found. Open transit coverage is uneven — it is strong across
-          Europe, Japan and parts of North America, and thin or absent elsewhere.
-          That is a gap in the data, not proof that no route exists.
-        </p>
-      )}
+          {state.status === 'done' && !state.journeys.length && (
+            <p className="notice">
+              {state.coverage ?? 'No journey found between those places on this data.'}
+              {' '}Our timetables currently cover Germany and its long-distance
+              connections into neighbouring countries.
+            </p>
+          )}
 
-      {state.status === 'done' && state.itineraries.length > 0 && (
-        <>
-          <h2 style={{ fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.1em',
-                       color: 'var(--text-faint)', marginBottom: '1rem' }}>
-            {overnightCount > 0
-              ? `${overnightCount} of ${state.itineraries.length} let you sleep through it`
-              : `${state.itineraries.length} journeys — none overnight on this corridor`}
-          </h2>
-          {state.itineraries.map((itin) => (
-            <Journey key={itin.id} itinerary={itin} from={from} to={to} reducedMotion={reducedMotion} />
-          ))}
-        </>
-      )}
+          {state.status === 'done' && state.journeys.length > 0 && (
+            <>
+              <h2 className="list-head">
+                {state.journeys.length} way{state.journeys.length > 1 ? 's' : ''} to get there
+                <span className="list-took mono">{state.tookMs}ms</span>
+              </h2>
+              <div className="options">
+                {state.journeys.map((j, i) => (
+                  <Option key={i} journey={j} index={i} active={i === selected}
+                          badge={badges[i]} onSelect={() => setSelected(i)} />
+                ))}
+              </div>
+              <Detail journey={active} />
+            </>
+          )}
+        </div>
+      </div>
 
       <footer>
         <p>
-          Routing and place search by{' '}
-          <a href="https://transitous.org/" target="_blank" rel="noopener noreferrer">Transitous</a>
-          {' '}(MOTIS) over open transit feeds —{' '}
-          <a href="https://transitous.org/sources/" target="_blank" rel="noopener noreferrer">data sources</a>.
-          Geometry © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a>.
-          Airport data from <a href="https://ourairports.com/data/" target="_blank" rel="noopener noreferrer">OurAirports</a> (public domain).
+          {(state.sources ?? []).map((s) => s.attribution).join(' · ')}
+          {state.generatedAt && (
+            <> · Timetable data retrieved {new Date(state.generatedAt).toISOString().slice(0, 10)}</>
+          )}
         </p>
         <p>
-          Times are shown in UTC. Schedules are not tickets: confirm with the
-          operator before travelling. This is a non-commercial, open-source
-          project — a condition of using the Transitous service.
+          Schedules are not tickets. Confirm times and buy with the operator before
+          you travel. Country geometry: Natural Earth (public domain).
         </p>
       </footer>
     </div>
