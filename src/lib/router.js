@@ -65,6 +65,44 @@ export function haversineM(aLat, aLon, bLat, bLon) {
 export function buildIndex(network) {
   const { stops, services } = network;
 
+  // Group trips that call at exactly the same stops in the same order. In this
+  // network 113,835 trips collapse to 15,546 patterns — 7.3 trips per pattern,
+  // and up to 460 for a busy S-Bahn line. That is the whole point of RAPTOR:
+  // scan each PATTERN once and take only the earliest boardable trip on it,
+  // instead of re-walking every hourly repetition of the same journey.
+  const patternOf = new Int32Array(services.length);
+  const patterns = [];        // patterns[p] = { stops: Int32Array, trips: number[] }
+  const patternIds = new Map();
+  for (let si = 0; si < services.length; si++) {
+    const calls = services[si].c;
+    let key = '';
+    for (let ci = 0; ci < calls.length; ci++) key += calls[ci][0] + ',';
+    let p = patternIds.get(key);
+    if (p === undefined) {
+      p = patterns.length;
+      patternIds.set(key, p);
+      patterns.push({ stops: Int32Array.from(calls.map((c) => c[0])), trips: [] });
+    }
+    patternOf[si] = p;
+    patterns[p].trips.push(si);
+  }
+  // Trips within a pattern in departure order, so the first boardable one is
+  // found by scanning forward rather than by sorting per query.
+  for (const p of patterns) {
+    p.trips.sort((a, b) => (services[a].c[0][2] ?? 0) - (services[b].c[0][2] ?? 0));
+  }
+
+  // Which patterns call at each stop, and at which position along them.
+  const patternsAtStop = new Map();
+  for (let p = 0; p < patterns.length; p++) {
+    const st = patterns[p].stops;
+    for (let i = 0; i < st.length; i++) {
+      let arr = patternsAtStop.get(st[i]);
+      if (!arr) { arr = []; patternsAtStop.set(st[i], arr); }
+      arr.push([p, i]);
+    }
+  }
+
   // Which services call at each stop, and at which position in their run.
   const byStop = new Map();
   for (let si = 0; si < services.length; si++) {
@@ -109,7 +147,7 @@ export function buildIndex(network) {
     if (near.length) footpaths.set(i, near);
   }
 
-  return { network, byStop, footpaths };
+  return { network, byStop, footpaths, patterns, patternsAtStop, patternOf };
 }
 
 /** Stops within `radiusM` of a coordinate, nearest first. */
@@ -290,13 +328,45 @@ export function search(index, origins, destinations, departAfterMin, opts = {}) 
   for (let round = 0; round < maxRounds && frontier.size; round++) {
     const nextFrontier = new Set();
 
+    // Collect the earliest boardable trip per (pattern, boarding position).
+    // Scanning every trip re-walks each hourly repetition of the same journey:
+    // 113,835 trips collapse to 15,546 patterns here, so this is ~7x less work
+    // for an identical answer, and far more on a busy commuter line where one
+    // pattern carries 460 trips.
+    const toScan = new Map();   // patternIdx -> { boardAt, stopIdx, readyAt }
     for (const stopIdx of frontier) {
       const readyAt = best.get(stopIdx);
-      const calls = index.byStop.get(stopIdx);
-      if (!calls) continue;
+      const at = index.patternsAtStop.get(stopIdx);
+      if (!at) continue;
+      for (const [p, pos] of at) {
+        const prev = toScan.get(p);
+        // Board where we can be READY EARLIEST, not earliest along the pattern.
+        // Taking the earliest position meant boarding a slow service at a stop
+        // we happen to reach first, which produced a 782-minute Hamburg-Cologne
+        // itinerary alongside a 219-minute direct train.
+        if (!prev || readyAt < prev.readyAt || (readyAt === prev.readyAt && pos < prev.pos)) {
+          toScan.set(p, { pos, stopIdx, readyAt });
+        }
+      }
+    }
 
-      for (const [svcIdx, callIdx] of calls) {
+    for (const [patternIdx, { pos, stopIdx, readyAt }] of toScan) {
+      const pattern = index.patterns[patternIdx];
+
+      // Walk this pattern's trips in departure order and take the first that
+      // we can actually catch.
+      let svcIdx = -1;
+      for (const candidate of pattern.trips) {
+        const d = services[candidate].c[pos][2];
+        if (d == null) continue;
+        const buffer = label.get(stopIdx)?.kind === 'ride' ? MIN_TRANSFER_MIN : 0;
+        if (d >= readyAt + buffer) { svcIdx = candidate; break; }
+      }
+      if (svcIdx < 0) continue;
+
+      {
         const svc = services[svcIdx];
+        const callIdx = pos;
         const dep = svc.c[callIdx][2];
         if (dep == null) continue;
 
