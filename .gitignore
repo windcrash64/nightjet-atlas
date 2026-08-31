@@ -7,3 +7,5 @@ src/data/network.json
 .claude/
 *.local
 prod.json
+*.html
+!index.html
