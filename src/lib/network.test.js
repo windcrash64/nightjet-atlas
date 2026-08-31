@@ -140,6 +140,33 @@ it('finds an overnight option on a corridor that has one', () => {
   assert.ok(sleeper.sleeperMin > 120, 'the sleeping portion should be substantial');
 });
 
+it('never shows a journey that another shown journey beats outright', () => {
+  // Shipped: Berlin-Munich led with an 08:00 arriving 16:20, above a 09:36
+  // direct arriving 13:43 — leaving 96 minutes earlier to arrive 157 minutes
+  // later. It got in through an unconditional "earliest departure" pick that
+  // skipped the dominance check.
+  // Two trains half an hour apart are a real choice even when one is slightly
+  // quicker; the defect is an option that is beaten CONVINCINGLY. That means
+  // arriving materially sooner having left no earlier — which is precisely
+  // what makes the slower one pointless.
+  const BEATEN_BY_MIN = 60;
+
+  for (const [from, to] of [['berlin', 'munich'], ['hamburg', 'cologne'], ['stuttgart', 'leipzig']]) {
+    const js = plan(from, to);
+    for (const a of js) {
+      for (const b of js) {
+        if (a === b) continue;
+        const beaten = b.departMin >= a.departMin
+          && b.arriveMin + BEATEN_BY_MIN < a.arriveMin
+          && b.transfers <= a.transfers;
+        assert.ok(!beaten,
+          `${from}->${to}: an option arriving ${a.arriveMin} with ${a.transfers} changes is beaten `
+          + `by one leaving no earlier and arriving ${a.arriveMin - b.arriveMin} minutes sooner`);
+      }
+    }
+  }
+});
+
 it('price is null across every real journey', () => {
   for (const [from, to] of [['berlin', 'munich'], ['frankfurt', 'vienna'], ['hamburg', 'cologne']]) {
     for (const j of plan(from, to)) {

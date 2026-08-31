@@ -274,32 +274,58 @@ function rank(journeys, limit) {
     (a, b) => a.transfers - b.transfers || a.durationMin - b.durationMin,
   );
 
-  take(byDuration[0]);                                    // fastest
-  take(byTransfers[0]);                                   // simplest
-  take(journeys.find((j) => j.hasSleeper));               // sleep through it
-  take([...journeys].sort((a, b) => a.departMin - b.departMin)[0]); // earliest away
+  take(byDuration[0]);                        // fastest
+  take(byTransfers[0]);                       // simplest
+  take(journeys.find((j) => j.hasSleeper));   // sleep through it
 
-  // Fill the rest, but never with a journey that is beaten outright by one
-  // already shown — same or later departure, and slower, and no simpler. A
-  // 500-minute two-change crawl sitting above a 250-minute direct train makes
-  // the whole list look untrustworthy.
+  // A journey is worth showing only if nothing already shown beats it outright:
+  // leaves no later, arrives sooner, and needs no more changes. A 500-minute
+  // two-change crawl above a 250-minute direct train makes the whole list look
+  // untrustworthy.
+  // Two trains half an hour apart are a real choice even when one is slightly
+  // quicker, so "beaten" means beaten CONVINCINGLY: leaves no earlier, arrives
+  // at least an hour sooner, and needs no more changes.
+  const BEATEN_BY_MIN = 60;
   const dominated = (j) => [...picked].some((p) =>
     p !== j
     && p.departMin >= j.departMin
-    && p.durationMin < j.durationMin
+    && p.arriveMin + BEATEN_BY_MIN < j.arriveMin
     && p.transfers <= j.transfers);
+
+  // Earliest departure, but only when leaving sooner actually gets you there
+  // sooner. A Berlin-Munich list led with an 08:00 that arrived at 16:20, above
+  // a 09:36 direct arriving 13:43: leaving 96 minutes earlier to arrive 157
+  // minutes later is nobody's preference.
+  const earliest = [...journeys].sort((a, b) => a.departMin - b.departMin)[0];
+  if (earliest && !dominated(earliest)) take(earliest);
 
   for (const j of [...journeys].sort((a, b) => a.departMin - b.departMin)) {
     if (picked.size >= limit) break;
     if (dominated(j)) continue;
     picked.add(j);
   }
-  // If pruning left the list short, top it up rather than show three options.
-  for (const j of [...journeys].sort((a, b) => a.departMin - b.departMin)) {
+  // If pruning left the list short, top it up with the best of what remains —
+  // still refusing anything a shown option beats convincingly. Showing six
+  // trustworthy options beats padding to eight with one that makes the list
+  // look wrong.
+  for (const j of [...journeys].sort(
+    (a, b) => a.durationMin - b.durationMin || a.transfers - b.transfers,
+  )) {
     if (picked.size >= limit) break;
+    if (dominated(j)) continue;
     picked.add(j);
   }
-  return [...picked].sort((a, b) => a.departMin - b.departMin);
+  // `dominated` only compares against what was already picked, so an option
+  // added LATER can beat an earlier one. Sweep the final set once so the list
+  // is internally consistent, not merely consistent with its own build order.
+  const chosen = [...picked];
+  const survivors = chosen.filter((j) => !chosen.some((p) =>
+    p !== j
+    && p.departMin >= j.departMin
+    && p.arriveMin + BEATEN_BY_MIN < j.arriveMin
+    && p.transfers <= j.transfers));
+
+  return survivors.sort((a, b) => a.departMin - b.departMin);
 }
 
 export function search(index, origins, destinations, departAfterMin, opts = {}) {
