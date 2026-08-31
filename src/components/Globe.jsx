@@ -120,9 +120,20 @@ function Journey({ journey, active, reduced }) {
 
 function Stop({ lat, lon, first }) {
   const p = useMemo(() => toVector(lat, lon, RADIUS + 0.012), [lat, lon]);
+  const mesh = useRef();
+
+  // Keep the marker a constant size ON SCREEN. A fixed world radius that reads
+  // correctly on a Berlin-Madrid view is an invisible speck when the camera
+  // pulls in for a Zurich-Milan hop, and a blob when it pulls back out.
+  useFrame(({ camera }) => {
+    if (!mesh.current) return;
+    const d = camera.position.distanceTo(mesh.current.getWorldPosition(new THREE.Vector3()));
+    mesh.current.scale.setScalar(d * (first ? 0.006 : 0.0038));
+  });
+
   return (
-    <mesh position={p}>
-      <sphereGeometry args={[first ? 0.013 : 0.008, 12, 12]} />
+    <mesh ref={mesh} position={p}>
+      <sphereGeometry args={[1, 12, 12]} />
       <meshBasicMaterial color={first ? '#e6ecf4' : '#93a3b8'} toneMapped={false} />
     </mesh>
   );
@@ -156,7 +167,11 @@ function Scene({ journeys, activeIndex, reduced }) {
     // Distance from the globe's centre: the surface is RADIUS away, and we want
     // the chord to fill ~55% of the frame.
     const needed = RADIUS + (chord / 0.55) / (2 * Math.tan(halfFov));
-    const distance = THREE.MathUtils.clamp(needed, 4.2, 9);
+    // The lower bound is what a SHORT journey gets. At 4.2 a Zurich-Milan hop
+    // sat as two dots in an empty frame; 3.15 is as close as the camera can sit
+    // before the globe's curvature fills the view, and it puts a short journey
+    // in recognisable country rather than in the dark.
+    const distance = THREE.MathUtils.clamp(needed, 3.15, 9);
 
     return {
       lat: (a.lat + b.lat) / 2,
@@ -206,7 +221,7 @@ function Scene({ journeys, activeIndex, reduced }) {
         </mesh>
 
         {lines.map((pts, i) => (
-          <Line key={i} points={pts} color="#43608c" lineWidth={1} transparent opacity={0.95} />
+          <Line key={i} points={pts} color="#4a6b9c" lineWidth={1.1} transparent opacity={1} />
         ))}
 
         {journeys.map((j, i) => (
@@ -218,7 +233,7 @@ function Scene({ journeys, activeIndex, reduced }) {
         enablePan={false}
         enableDamping={!reduced}
         dampingFactor={0.06}
-        minDistance={3.6}
+        minDistance={3.0}
         maxDistance={9}
         rotateSpeed={0.45}
       />
