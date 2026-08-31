@@ -51,7 +51,10 @@ function PlaceField({ id, label, value, place, onText, onPick, placeholder }) {
       <input
         id={id} value={value} placeholder={placeholder} autoComplete="off"
         onChange={(e) => { onText(e.target.value); setOpen(true); }}
-        onFocus={() => setOpen(true)}
+        // Select the whole value on focus so typing REPLACES the current
+        // station. Without this, clicking into a field holding "Berlin Hbf"
+        // and typing "Madrid" leaves "MadridBerlin Hbf", which matches nothing.
+        onFocus={(e) => { e.target.select(); setOpen(true); }}
         onBlur={() => setTimeout(() => setOpen(false), 160)}
       />
       {place && !open && <span className="field-note">{place.stops} stops</span>}
