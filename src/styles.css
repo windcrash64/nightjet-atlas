@@ -127,7 +127,10 @@ button.go:disabled { opacity: 0.45; cursor: progress; transform: none; }
   aspect-ratio: 1 / 1; width: 100%;
   border: 1px solid var(--line); background: var(--ink); overflow: hidden;
 }
-@media (max-width: 1080px) { .globe { aspect-ratio: 4 / 3; } }
+/* Keep the map square on narrow screens. A 4:3 letterbox squeezes Europe into
+   a strip where the journey arc is a few pixels tall — the map stops answering
+   "where is this" and becomes decoration. */
+@media (max-width: 1080px) { .globe { aspect-ratio: 1 / 1; } }
 .globe canvas { display: block; }
 
 .globe--fallback {
@@ -149,6 +152,12 @@ button.go:disabled { opacity: 0.45; cursor: progress; transform: none; }
   margin-bottom: var(--s3);
 }
 .list-took { color: var(--line); font-size: 0.7rem; letter-spacing: 0; }
+
+.list-note {
+  margin: 0 0 var(--s3); color: var(--text-dim); font-size: 0.85rem;
+  border-left: 2px solid var(--line); padding-left: var(--s3);
+}
+.list-note strong { color: var(--text); font-weight: 600; }
 
 .options { display: flex; flex-direction: column; }
 

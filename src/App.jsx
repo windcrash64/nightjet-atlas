@@ -213,6 +213,20 @@ export default function App() {
     return out;
   }, [state.journeys]);
 
+  /**
+   * When a corridor is served by one train running hourly, every option is the
+   * same service at a different time. Six identical rows look like a bug, so
+   * say plainly that the choice is only departure time.
+   */
+  const sameService = useMemo(() => {
+    const j = state.journeys;
+    if (j.length < 3) return null;
+    const spines = j.map((x) =>
+      x.legs.filter((l) => l.mode !== 'walk').map((l) => l.service).join('>'),
+    );
+    return new Set(spines).size === 1 ? spines[0] : null;
+  }, [state.journeys]);
+
   const active = state.journeys[selected] ?? null;
 
   return (
@@ -220,8 +234,9 @@ export default function App() {
       <header className="masthead">
         <h1>How do I actually get<br /><em>from here to there?</em></h1>
         <p>
-          Every train, coach and ferry we can see, drawn on the world and ranked
-          by what matters — time, changes, and whether you can sleep through it.
+          Real timetables, drawn on the world and ranked by what matters — time,
+          changes, and whether you can sleep through it. Today that means trains
+          across Germany and its long-distance links into its neighbours.
         </p>
       </header>
 
@@ -283,6 +298,12 @@ export default function App() {
                 {state.journeys.length} way{state.journeys.length > 1 ? 's' : ''} to get there
                 <span className="list-took mono">{state.tookMs}ms</span>
               </h2>
+              {sameService && (
+                <p className="list-note">
+                  One service runs this route — <strong>{sameService}</strong>. The
+                  only real choice here is when you leave.
+                </p>
+              )}
               <div className="options">
                 {state.journeys.map((j, i) => (
                   <Option key={i} journey={j} index={i} active={i === selected}
@@ -297,7 +318,9 @@ export default function App() {
 
       <footer>
         <p>
-          {(state.sources ?? []).map((s) => s.attribution).join(' · ')}
+          {/* Feeds from one publisher share an attribution string; printing it
+              once per feed reads as a bug, not as diligence. */}
+          {[...new Set((state.sources ?? []).map((s) => s.attribution))].join(' · ')}
           {state.generatedAt && (
             <> · Timetable data retrieved {new Date(state.generatedAt).toISOString().slice(0, 10)}</>
           )}
