@@ -33,7 +33,10 @@ const STATION_QUALIFIER = new RegExp(
 
 /** Second words that genuinely belong to a city name (Frankfurt am Main). */
 const COMPOUND_CITY_WORD =
-  /^(am|an|auf|der|den|des|del|de|la|le|les|sur|upon|main|oder|rhein|ruhr|saale|elbe|havel|neckar|donau|isar|lech|inn|haag|bosch)$/i;
+  /^(am|an|auf|der|den|des|del|de|en|la|le|les|sur|upon|main|oder|rhein|ruhr|saale|elbe|havel|neckar|donau|isar|lech|inn|haag|bosch)$/i;
+
+/** Words that join a name and therefore cannot end one. */
+const CONNECTIVE = /^(am|an|auf|der|des|del|de|en|la|le|les|sur|upon)$/i;
 
 /**
  * English and other common exonyms for cities the feeds label locally. Without
@@ -55,7 +58,12 @@ export const CITY_ALIASES = {
 
 /** The city part of a station name. */
 export function cityNameFrom(stationName) {
-  const head = String(stationName).split(/[,(]/)[0].trim();
+  // The Dutch feed prefixes bus and metro stops with the station they serve:
+  // "[Rotterdam Centraal] Metrostation Rotterdam Centraal". Left in, the
+  // bracket became part of the name and searching "rotterdam" returned the
+  // literal string "[Rotterdam".
+  const unbracketed = String(stationName).replace(/^\[([^\]]+)\]\s*/, '$1 ');
+  const head = unbracketed.split(/[,(]/)[0].trim();
   const tokens = head.split(/[\s\-–]+/).filter(Boolean);
   const out = [];
   for (const t of tokens) {
@@ -65,6 +73,12 @@ export function cityNameFrom(stationName) {
   // A blunt two-word cap turned "Lyon Part Dieu" into "Lyon Part". Keep a
   // second word only when it belongs to a compound place name.
   if (out.length > 1 && !COMPOUND_CITY_WORD.test(out[1])) return out[0];
+  // A connective word cannot END a name: cutting at two words left "Frankfurt
+  // am" as its own city beside "Frankfurt". Take the third word too, or drop
+  // the connective if there isn't one.
+  if (out.length > 1 && CONNECTIVE.test(out[1])) {
+    return out.length > 2 ? out.slice(0, 3).join(' ') : out[0];
+  }
   return out.slice(0, 2).join(' ') || head;
 }
 
@@ -89,14 +103,20 @@ export function buildPlaceIndex(network, index, { minStationScore = 3 } = {}) {
 
   for (let i = 0; i < network.stops.length; i++) {
     const s = network.stops[i];
-    const clean = s.n
+    // Key on the CITY NAME, not on the raw stop name, so a bracket-prefixed
+    // Dutch bus stop groups with the railway station it serves rather than
+    // forming its own place called "[Rotterdam".
+    const clean = cityNameFrom(s.n)
       .toLowerCase()
       .replace(/\(.*?\)/g, ' ')
       .replace(/\b(hbf|hauptbahnhof|bahnhof|bf|hb|centraal|central|station|gl\.?\s*\d.*)\b/g, ' ')
       .replace(/[^a-zà-ÿ0-9]+/g, ' ')
       .trim();
     if (!clean) continue;
-    const cityKey = clean.split(' ')[0];
+    // Key on the WHOLE city name, not its first word. Keying on the first word
+    // collapsed 708 Den Haag stops into a city called "Den", and would merge
+    // any two cities sharing a leading word.
+    const cityKey = clean;
     if (cityKey.length < 2) continue;
 
     const score = serviceScore(network, index, i);
@@ -145,9 +165,12 @@ export function searchPlaces(placeIndex, rawQuery, limit = 8) {
   for (const p of placeIndex) {
     const name = p.name.toLowerCase();
     let score;
-    if (p.key === q) score = 0;
+    if (p.key === q || name === q) score = 0;
     else if (name.startsWith(q)) score = 1;
-    else if (p.key.startsWith(q)) score = 2;
+    // A city key is only its FIRST word, so a two-word query like "den haag"
+    // must match on the full name. Matching the key alone would return every
+    // German village beginning "Den" for a search for The Hague.
+    else if (!q.includes(' ') && p.key.startsWith(q)) score = 2;
     else if (name.includes(` ${q}`)) score = 3;
     else continue;                    // no prefix match: not a hit at all
     // A city outranks any one of its own stations at equal match quality.

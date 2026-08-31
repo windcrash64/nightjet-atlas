@@ -24,7 +24,10 @@ test('a city takes its own name, not its biggest station\'s', () => {
 test('a compound city name keeps its second word', () => {
   // Shipped: a blunt two-word cap turned "Lyon Part Dieu" into "Lyon Part".
   assert.equal(cityNameFrom('Lyon Part Dieu'), 'Lyon');
-  assert.equal(cityNameFrom('Frankfurt am Main'), 'Frankfurt am');
+  assert.equal(cityNameFrom('Frankfurt am Main'), 'Frankfurt am Main');
+  // A connective cannot end a name: cutting at two words left 'Frankfurt am'
+  // as its own city sitting beside 'Frankfurt'.
+  assert.equal(cityNameFrom('Aix-en-Provence TGV'), 'Aix-en-Provence'.replace(/-/g, ' '));
   assert.equal(cityNameFrom('Den Haag Centraal'), 'Den Haag');
 });
 
