@@ -110,6 +110,19 @@ function pickLabel(short, long) {
 }
 
 /**
+ * Adds the train number to a bare service class: "NJ" becomes "NJ 470".
+ *
+ * Only when the label really is just a class. A label that already carries a
+ * number ("ICE 29") or names a corridor ("Paris - Côte d'Azur TGV") is left
+ * alone — appending to those produces noise, not precision.
+ */
+function withNumber(label, number) {
+  if (!label || !number) return label;
+  if (!/^[A-Z]{1,4}$/.test(label.trim())) return label;
+  return `${label.trim()} ${number}`;
+}
+
+/**
  * Whether a route is long-distance, decided from the feed rather than the name.
  *
  * GTFS extended route types: 101 high-speed, 102 long-distance, 103 inter-
@@ -235,7 +248,16 @@ async function ingestFeed(feed) {
   const trips = new Map();
   for (const t of tripRows) {
     if (!routes.has(t.route_id)) continue;
-    trips.set(t.trip_id, { routeId: t.route_id, headsign: (t.trip_headsign || '').trim(), serviceId: t.service_id });
+    trips.set(t.trip_id, {
+      routeId: t.route_id,
+      headsign: (t.trip_headsign || '').trim(),
+      // The train number a passenger sees on the platform board. The German
+      // feed omits it entirely (its trips.txt has three columns), so every
+      // Nightjet there is just "NJ"; the Swiss feed carries it on all 2.1
+      // million of its trips, which turns "NJ" into "NJ 470".
+      number: (t.trip_short_name || '').trim(),
+      serviceId: t.service_id,
+    });
   }
   if (droppedRoutes) {
     console.log(`    filtered out ${droppedRoutes.toLocaleString()} routes not in [${feed.keepModes.join(', ')}]`);
@@ -294,7 +316,10 @@ async function ingestFeed(feed) {
     if (!route) continue;
     services.push({
       id: tripId,
-      service: route.label || trip.headsign || null,
+      // "NJ" alone cannot tell one Nightjet from another; "NJ 470" can. Append
+      // the train number when the feed supplies one and the label is a bare
+      // service class rather than an already-specific name.
+      service: withNumber(route.label, trip.number) || trip.headsign || null,
       longDistance: route.longDistance,
       mode: route.mode,
       operator: route.operator,
