@@ -47,7 +47,11 @@
       "commercialUse": true,
       "attribution": "Timetable data: opentransportdata.swiss (SBB)",
       "covers": "IC, IR, EC, NJ, TGV, ICE, RJX, PE and Swiss regional rail",
-      "keepModes": ["rail", "night_rail", "ferry"],
+      "keepModes": [
+        "rail",
+        "night_rail",
+        "ferry"
+      ],
       "maxRouteType": 105,
       "notes": "232MB zipped, ~3.7GB unpacked, and there is NO rail-only variant — the file is the whole country including municipal buses, so keepModes filters it during ingest. The permalink 302s to a 60-second presigned S3 URL, so it must be followed each run rather than cached. Switzerland is the hub of European rail: it is where German, French and Italian long-distance services meet. maxRouteType keeps only long-distance and express rail (GTFS extended types 100-105): including Swiss regional and S-Bahn made them 70% of the whole graph and tripled search latency for one small country."
     },
@@ -61,7 +65,11 @@
       "commercialUse": true,
       "attribution": "Timetable data: OVapi / OpenOV (CC0)",
       "covers": "NS Intercity, Intercity Direct, Sprinter, and international services via NS International",
-      "keepModes": ["rail", "night_rail", "ferry"],
+      "keepModes": [
+        "rail",
+        "night_rail",
+        "ferry"
+      ],
       "notes": "213MB zipped and mostly buses, so keepModes filters it during ingest. CC0 imposes no attribution obligation at all; we credit anyway because EU Delegated Regulation 2017/1926 Art. 8(3) requires the source to be shown regardless of licence. Verified 2026-09-01: HTTP 200, 213,222,500 bytes."
     },
     {
@@ -111,8 +119,12 @@
       "reason": "Licence text could not be retrieved, and the download path is undocumented. Working feed, unverified terms."
     },
     {
-      "id": "cz-poland-rehosts",
-      "reason": "Czechia (data.jr.ggu.cz) and Poland (gtfs.kasznia.net) are third-party rehosts rather than operator-owned URLs. Licences look permissive (CC0, CC-BY-4.0) but a single volunteer is the uptime dependency. Add only with a fallback."
+      "id": "pl-rail",
+      "reason": "No defensible licence. Poland publishes NO official rail GTFS: dane.gov.pl carries only urban feeds, and PKP Intercity, PKP PLK and POLREGIO are not registered as data-providing institutions at all. The one official source, pdp-api.plk-sa.pl, is JSON-only behind registration plus 3-5 days of manual approval, and its footer reads \"Wszelkie prawa zastrzeżone\" (all rights reserved). The CC-BY-4.0 on the gtfs.kasznia.net rehost is the Transitous maintainers own characterisation and traces to no PKP grant, so the rehost may rest on an unfounded licence claim. Excluded on licence grounds, not merely fragility. See docs/research/cz-pl-rail-feeds-2026-09.md"
+    },
+    {
+      "id": "cz-cisjr",
+      "reason": "Viable and deferred, not rejected. Czechia has the cleanest licence of any feed examined: the Ministry of Transport publishes via portal.cisjr.cz and data.gov.cz declares CC0 plus explicit disclaimers of copyright, database copyright and sui generis database right. But it ships NeTEx and CZPTT XML only - there is no gtfs folder - so adopting it means owning a NeTEx-to-GTFS converter and synthesising extended route types 100-105 ourselves, since NeTEx has no route_type. Worth doing to remove the single-volunteer dependency; de-risk by diffing converter output against data.jr.ggu.cz before cutting over. Also check the payload: the metadata declares \"contains personal data\", which CC0 does not waive. See docs/research/cz-pl-rail-feeds-2026-09.md"
     }
   ]
 }

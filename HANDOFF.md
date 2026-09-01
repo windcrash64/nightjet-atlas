@@ -65,8 +65,16 @@ everywhere, enforced by a test.
   evidence. See the research summary below.
 - **Coverage stops at five countries.** Italy is NeTEx-only, Austria needs
   Keycloak OAuth and its host refuses connections, Belgium states no licence.
-  Czechia and Poland are verified workable and are the obvious next additions — all need route_type filtering during ingest,
-  which the ingester now supports via keepModes and maxRouteType.
+  Czechia and Poland were researched on 2026-09-01 and the answer was not the
+  expected one — see `docs/research/cz-pl-rail-feeds-2026-09.md`:
+  - **Poland is excluded on licence grounds.** No official rail GTFS exists;
+    PKP is not even registered as a data provider on dane.gov.pl. The one
+    official source is JSON behind manual approval, marked "all rights
+    reserved". The CC-BY-4.0 on the volunteer rehost traces to no PKP grant.
+  - **Czechia is viable and deferred.** Its licence is the best we have found
+    anywhere (the state disclaims copyright, database copyright and sui
+    generis right, with a CC0 match), but it publishes NeTEx and CZPTT XML
+    only. Adding it is a converter project, not an ingest config change.
 - **Times are agency-local, and every country ingested is on CET**, so they are
   directly comparable today. The ingester fails loudly if a feed from another
   offset is added, because journeys crossing that boundary would be silently
@@ -103,7 +111,13 @@ conclusions:
 
 ## Next, in the order I would do it
 
-1. Add Czechia and Poland, using the keepModes/maxRouteType filters.
-2. Local times instead of UTC.
-3. Deploy: small VPS, nightly ingest, a real domain.
-4. Only then revisit money, with usage data rather than a guess.
+1. Deploy: small VPS, nightly ingest, a real domain. Nothing else matters
+   until someone other than us can load it.
+2. Czechia, if coverage is worth a NeTEx→GTFS converter. Not Poland — its
+   licence question is closed for now, and reopening it means asking PKP PLK
+   directly rather than searching again.
+3. Only then revisit money, with usage data rather than a guess.
+
+(Local-vs-UTC times came off this list: times are agency-local, every ingested
+country is on CET, and the ingester fails loudly if a feed from another offset
+is added.)
