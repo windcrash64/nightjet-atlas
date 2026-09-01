@@ -69,12 +69,16 @@ everywhere, enforced by a test.
 
 ## Known gaps
 
-- **Not deployed.** The server needs 451MB resident, so a 1GB VPS (~€5/month)
-  is enough — it was 1.4GB before the typed-array work, which would have
-  needed a 4GB box. Still not Cloudflare Pages or Workers (128MB), and still
-  not Lambda-shaped: the 3.9s index build wants a long-lived process, not a
-  cold start per request. The old Nightjet Atlas deployment at
-  nightjet-atlas.pages.dev is still live and now shows a different, older app.
+- **Not deployed, but ready to be.** See [DEPLOY.md](DEPLOY.md): 451MB
+  resident (a 1GB VPS is enough; it was 1.4GB before the typed-array work),
+  ~6GB disk of which 452MB is the feed cache, plus a systemd unit and a cron
+  script. The nightly cycle is safe — the ingest writes network.json
+  atomically and the server reloads in place on SIGHUP or POST /api/reload, so
+  there is no restart and no dropped request, and a corrupt file leaves
+  yesterday's data serving. Still not Cloudflare Pages or Workers (128MB), and
+  still not Lambda-shaped: the 6s index build wants a long-lived process. What
+  is left is buying the box and pointing a domain at it. The old
+  nightjet-atlas.pages.dev deployment is still live and shows an older app.
 - **No payments.** Decided deliberately: build the product first, monetise with
   evidence. See the research summary below.
 - **Coverage stops at five countries.** Italy is NeTEx-only, Austria needs
