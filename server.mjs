@@ -57,20 +57,52 @@ function rateLimited(ip) {
 process.on('uncaughtException', (e) => console.error('[server] uncaught', e));
 process.on('unhandledRejection', (e) => console.error('[server] unhandled', e));
 
-console.log('Loading network…');
-const network = JSON.parse(readFileSync('src/data/network.json', 'utf8'));
-const index = buildIndex(network);
-console.log(`  ${network.stops.length.toLocaleString()} stops, ${network.services.length.toLocaleString()} services`);
-
-// Places people can search for. Stop names in GTFS are station names
-// ("Berlin Hbf"), not city names, so we resolve a typed query to coordinates
-// by matching stop names and returning the busiest cluster.
 // Repeat searches for the same pair are common (changing the hour, going back
-// and forth). The network never changes at runtime, so results are stable.
+// and forth), and the data only changes when a reload swaps it — so results are
+// stable between reloads, and the cache is cleared by one.
 const cache = new Map();
 
-const placeIndex = buildPlaceIndex(network, index);
-console.log(`  ${placeIndex.length.toLocaleString()} searchable places`);
+/**
+ * The loaded data, swapped as a unit.
+ *
+ * `let`, not `const`, and read through `data.` everywhere: a nightly ingest
+ * needs the server to pick up a new network.json without 20 seconds of
+ * downtime for a restart. Building the replacement takes ~5s during which the
+ * old one keeps serving, and the swap itself is a single assignment — a
+ * request either sees the whole old network or the whole new one.
+ *
+ * Places people can search for: stop names in GTFS are station names ("Berlin
+ * Hbf"), not city names, so a typed query resolves to coordinates by matching
+ * stop names and returning the busiest cluster.
+ */
+function load(label) {
+  const t = Date.now();
+  const network = JSON.parse(readFileSync('src/data/network.json', 'utf8'));
+  const index = buildIndex(network);
+  const placeIndex = buildPlaceIndex(network, index);
+  console.log(
+    `${label}: ${network.stops.length.toLocaleString()} stops, `
+    + `${network.services.length.toLocaleString()} services, `
+    + `${placeIndex.length.toLocaleString()} places in ${Date.now() - t}ms`,
+  );
+  return { network, index, placeIndex };
+}
+
+console.log('Loading network…');
+let data = load('  loaded');
+
+// SIGHUP is the conventional "re-read your configuration" signal, so a nightly
+// ingest ends with `kill -HUP $(pidof node)` and nothing else. A failed reload
+// must not take the server down with it: keep serving the old data and say so.
+process.on('SIGHUP', () => {
+  console.log('[server] SIGHUP — reloading');
+  try {
+    data = load('[server] reloaded');
+    cache.clear();     // cached journeys belong to the old timetable
+  } catch (e) {
+    console.error('[server] reload FAILED, keeping the previous network:', e.message);
+  }
+});
 
 /** Today as YYYYMMDD, a local calendar day rather than an instant. */
 function todayYmd() {
@@ -91,7 +123,7 @@ function json(res, status, body, headers = {}) {
 
 
 function handlePlaces(url, res) {
-  json(res, 200, { places: searchPlaces(placeIndex, url.searchParams.get('q')) });
+  json(res, 200, { places: searchPlaces(data.placeIndex, url.searchParams.get('q')) });
 }
 
 function handleSearch(body, res) {
@@ -104,7 +136,7 @@ function handleSearch(body, res) {
   // outside the ingested horizon, which disables day filtering rather than
   // answering "no trains" for a date we simply have no calendar for.
   const date = Number(body?.date) || todayYmd();
-  const dayNumber = dayNumberFor(index, date);
+  const dayNumber = dayNumberFor(data.index, date);
   const ok = (p) => p && Number.isFinite(p.lat) && Number.isFinite(p.lon)
     && Math.abs(p.lat) <= 90 && Math.abs(p.lon) <= 180;
   if (!ok(from) || !ok(to)) {
@@ -134,8 +166,8 @@ function handleSearch(body, res) {
   // spelling — Marseille Saint-Charles has three records — so a tight cap can
   // drop the very record a service calls at. Extra origin stops cost one
   // pattern-scan each, which the search absorbs.
-  const origins = accessStops(index, from.lat, from.lon, 8000, 16);
-  const dests = accessStops(index, to.lat, to.lon, 8000, 16);
+  const origins = accessStops(data.index, from.lat, from.lon, 8000, 16);
+  const dests = accessStops(data.index, to.lat, to.lon, 8000, 16);
 
   if (!origins.length || !dests.length) {
     return json(res, 200, {
@@ -143,8 +175,8 @@ function handleSearch(body, res) {
       coverage: !origins.length
         ? 'No station in our data is near that origin.'
         : 'No station in our data is near that destination.',
-      sources: network.sources,
-      generatedAt: network.generatedAt,
+      sources: data.network.sources,
+      generatedAt: data.network.generatedAt,
       tookMs: Date.now() - t0,
     });
   }
@@ -155,7 +187,7 @@ function handleSearch(body, res) {
   const key = `${origins[0].idx}:${dests[0].idx}:${hour}:${dayNumber}`;
   let journeys = cache.get(key);
   if (!journeys) {
-    journeys = searchWindow(index, origins, dests, hour * 60, {
+    journeys = searchWindow(data.index, origins, dests, hour * 60, {
       windowMin: 12 * 60, stepMin: 180, maxRounds: 3, maxJourneys: 8, dayNumber,
     });
     if (cache.size > 500) cache.clear();
@@ -164,15 +196,15 @@ function handleSearch(body, res) {
 
   json(res, 200, {
     journeys,
-    sources: network.sources,
+    sources: data.network.sources,
     // EU Delegated Regulation 2017/1926 Art. 8(3) requires the source and the
     // last-update time of static data to be shown wherever it is reused.
-    generatedAt: network.generatedAt,
+    generatedAt: data.network.generatedAt,
     // Which date this answered for, and the range the ingested calendars
     // actually cover. The UI bounds its date picker to this rather than
     // letting someone ask for a day we have no calendar for.
     date,
-    calendar: { from: network.calendarEpoch ?? null, days: network.calendarDays ?? 0 },
+    calendar: { from: data.network.calendarEpoch ?? null, days: data.network.calendarDays ?? 0 },
     tookMs: Date.now() - t0,
   });
 }
@@ -240,6 +272,30 @@ const server = createServer(async (req, res) => {
   }
 
   if (url.pathname === '/api/places' && req.method === 'GET') return handlePlaces(url, res);
+
+  // Reload the network after an ingest, without dropping a request.
+  //
+  // SIGHUP does the same thing and is the better trigger on the deploy target,
+  // but Node cannot deliver signals on Windows at all (kill() gives ENOSYS), so
+  // the signal path is unverifiable where this is developed. This endpoint is
+  // testable on both, which is why it exists rather than trusting the signal.
+  //
+  // Bound to loopback and gated on a token: it is a ~6s CPU spike, so it must
+  // not be reachable by a stranger. No token set means no remote reload at all.
+  if (url.pathname === '/api/reload' && req.method === 'POST') {
+    const token = process.env.RELOAD_TOKEN;
+    if (!token || req.headers['x-reload-token'] !== token) {
+      return json(res, 404, { error: 'Not found.' });
+    }
+    try {
+      data = load('[server] reloaded');
+      cache.clear();
+      return json(res, 200, { ok: true, generatedAt: data.network.generatedAt });
+    } catch (e) {
+      console.error('[server] reload FAILED, keeping the previous network:', e.message);
+      return json(res, 500, { error: 'Reload failed; the previous network is still serving.' });
+    }
+  }
 
   if (url.pathname === '/api/search' && req.method === 'POST') {
     const ip = req.socket.remoteAddress ?? '?';

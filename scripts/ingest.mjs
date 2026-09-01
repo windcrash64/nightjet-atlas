@@ -9,7 +9,7 @@
  * Run: node scripts/ingest.mjs
  */
 
-import { mkdirSync, writeFileSync, readFileSync, existsSync, createReadStream, statSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, createReadStream, statSync, renameSync, rmSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { execSync } from 'node:child_process';
 import { join } from 'node:path';
@@ -56,24 +56,35 @@ async function download(feed, { force = false } = {}) {
   const zip = join(CACHE, `${feed.id}.zip`);
   const dir = join(CACHE, feed.id);
 
-  // Re-fetching 213MB on every run is slow and rude — OVapi returned HTTP 429
-  // after a few iterations of exactly that. Timetables change daily at most, so
-  // a cached copy from this morning is the same data.
-  if (!force && existsSync(zip) && existsSync(join(dir, 'stop_times.txt'))) {
+  // The ZIP is the cache, not the unpacked directory. ingestFeed deletes the
+  // unpacked copy when it is done — 4.9GB of a 5.4GB cache against 453MB of
+  // zips — so testing for stop_times.txt here would force a re-download on
+  // every run and earn another HTTP 429 from OVapi.
+  const unpack = () => {
+    mkdirSync(dir, { recursive: true });
+    // unzip is available in git-bash on Windows and everywhere else we run.
+    execSync(`unzip -o -q "${zip}" -d "${dir}"`, { stdio: 'pipe' });
+    return dir;
+  };
+
+  // Re-fetching 232MB on every run is slow and rude. Timetables change daily at
+  // most, so a copy from this morning is the same data.
+  if (!force && existsSync(zip)) {
     const age = Date.now() - statSync(zip).mtimeMs;
     if (age < CACHE_MAX_AGE_MS) {
       console.log(`  ${feed.id}: cached (${(age / 3600000).toFixed(1)}h old)`);
-      return dir;
+      return existsSync(join(dir, 'stop_times.txt')) ? dir : unpack();
     }
   }
 
   process.stdout.write(`  ${feed.id}: fetching… `);
   const res = await fetch(feed.url, { redirect: 'follow' });
   if (!res.ok) {
-    // A rate limit or an outage should not throw away a usable local copy.
-    if (existsSync(join(dir, 'stop_times.txt'))) {
+    // A rate limit or an outage should not throw away a usable local copy,
+    // however stale — yesterday's timetable beats no timetable.
+    if (existsSync(zip)) {
       console.log(`HTTP ${res.status} — using the cached copy`);
-      return dir;
+      return existsSync(join(dir, 'stop_times.txt')) ? dir : unpack();
     }
     throw new Error(`${feed.id}: HTTP ${res.status} and no cached copy to fall back on`);
   }
@@ -81,10 +92,7 @@ async function download(feed, { force = false } = {}) {
   writeFileSync(zip, buf);
   console.log(`${(buf.length / 1048576).toFixed(1)} MB`);
 
-  mkdirSync(dir, { recursive: true });
-  // unzip is available in git-bash on Windows and everywhere else we run.
-  execSync(`unzip -o -q "${zip}" -d "${dir}"`, { stdio: 'pipe' });
-  return dir;
+  return unpack();
 }
 
 function table(dir, name) {
@@ -471,6 +479,23 @@ async function ingestFeed(feed) {
     });
   }
 
+  // The unpacked GTFS is dead weight the moment this feed is parsed: 4.9GB of
+  // the 5.4GB cache, against 453MB of zips. Keeping it would make a small VPS
+  // buy disk for files that exist only between unzip and parse. The zip stays,
+  // because that is what the 12-hour download cache actually reuses — a rerun
+  // just unpacks it again, which costs seconds.
+  //
+  // Off by default while iterating locally, where re-unzipping 232MB on every
+  // run is the slower trade. INGEST_KEEP_UNPACKED=1 restores that.
+  if (process.env.INGEST_KEEP_UNPACKED !== '1') {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch (e) {
+      // Not fatal: a locked file costs disk, not correctness.
+      console.log(`    could not clear ${dir}: ${e.message}`);
+    }
+  }
+
   return { feed, stops, services, zones };
 }
 
@@ -527,8 +552,19 @@ async function main() {
     stops,
     services,
   };
+  // Write beside the target, then rename over it.
+  //
+  // A direct writeFileSync leaves the live file truncated for the seconds it
+  // takes to flush 103MB, and a nightly ingest runs against a server that may
+  // restart at any moment — it would load a half-written file, or crash on
+  // JSON.parse of one. rename() within the same directory is atomic on both
+  // POSIX and Windows, so a reader sees either the whole old file or the whole
+  // new one and never a partial.
   const json = JSON.stringify(network);
-  writeFileSync(join(OUT, 'network.json'), json);
+  const target = join(OUT, 'network.json');
+  const staged = `${target}.new`;
+  writeFileSync(staged, json);
+  renameSync(staged, target);
 
   const modes = {};
   for (const s of services) modes[s.m] = (modes[s.m] || 0) + 1;
