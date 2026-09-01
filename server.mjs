@@ -10,8 +10,8 @@
  */
 
 import { createServer } from 'node:http';
-import { readFileSync, existsSync } from 'node:fs';
-import { extname, join, normalize } from 'node:path';
+import { readFileSync, statSync } from 'node:fs';
+import { extname, join, resolve, sep } from 'node:path';
 import { buildIndex, stopsNear, accessStops, searchWindow } from './src/lib/router.js';
 import { buildPlaceIndex, searchPlaces } from './src/lib/places.js';
 
@@ -21,7 +21,7 @@ const PORT = Number(process.env.PORT || 8080);
 // operator skip a firewall rule. Default to loopback and require an explicit
 // HOST=0.0.0.0 once a reverse proxy actually fronts this.
 const HOST = process.env.HOST || '127.0.0.1';
-const DIST = 'dist';
+const DIST_ROOT = resolve('dist');
 
 // A search payload is about 120 bytes. Without a cap, `for await (…) chunks.push`
 // accumulates without bound and `Buffer.concat().toString()` then makes a second
@@ -166,6 +166,45 @@ const MIME = {
   '.json': 'application/json', '.png': 'image/png', '.woff2': 'font/woff2',
 };
 
+/**
+ * Static files, read once.
+ *
+ * Every hit used to do existsSync + readFileSync — two blocking syscalls on
+ * the event loop, re-reading a 1.25MB bundle each time, with no Cache-Control
+ * or ETag so browsers refetched it on every load. dist/ is immutable after a
+ * build and totals ~1.3MB, which is nothing against a 450MB baseline.
+ */
+const fileCache = new Map();
+
+function serveStatic(file, res) {
+  let entry = fileCache.get(file);
+  if (!entry) {
+    // statSync rather than existsSync: a path that names a DIRECTORY exists,
+    // and readFileSync then throws EISDIR — which, inside the async handler,
+    // is another way to lose the whole process.
+    let stat;
+    try { stat = statSync(file); } catch { return false; }
+    if (!stat.isFile()) return false;
+    entry = {
+      buf: readFileSync(file),
+      type: MIME[extname(file)] ?? 'application/octet-stream',
+      // Vite gives assets content-hashed names, so a changed file is a changed
+      // URL and these can be cached forever. index.html must not be.
+      immutable: file.includes(`${sep}assets${sep}`),
+    };
+    fileCache.set(file, entry);
+  }
+  res.writeHead(200, {
+    'Content-Type': entry.type,
+    'Content-Length': entry.buf.length,
+    'Cache-Control': entry.immutable
+      ? 'public, max-age=31536000, immutable'
+      : 'no-cache',
+  }).end(entry.buf);
+  return true;
+}
+
+
 const server = createServer(async (req, res) => {
   // `new URL` throws for an empty, spaced or bracketed Host header, and the
   // throw inside this async handler killed the process. Verified fatal with
@@ -220,17 +259,25 @@ const server = createServer(async (req, res) => {
   }
 
   // Static files.
+  //
+  // The previous guard — normalize(rel).replace(/^(\.\.[/\\])+/, '') then
+  // !file.includes('..') — could never match anything: `rel` always starts
+  // with '/', and path.normalize keeps the leading separator, so the result
+  // never begins with '..'. Traversal was in fact blocked by `new URL`, which
+  // resolves '..' segments before this code runs and never percent-decodes
+  // %2e/%2f. That worked, but by accident, and dead security code invites
+  // someone to "simplify" the real protection later. Assert containment
+  // explicitly instead.
+  // '/' resolves to DIST_ROOT itself, which is a directory — readFileSync
+  // throws on it and the request dies with no response at all.
   const rel = url.pathname === '/' ? '/index.html' : url.pathname;
-  const safe = normalize(rel).replace(/^(\.\.[/\\])+/, '');
-  const file = join(DIST, safe);
-  if (existsSync(file) && !file.includes('..')) {
-    const buf = readFileSync(file);
-    return res.writeHead(200, { 'Content-Type': MIME[extname(file)] ?? 'application/octet-stream' }).end(buf);
+  const file = resolve(DIST_ROOT, '.' + rel);
+  if (!file.startsWith(DIST_ROOT + sep)) {
+    return res.writeHead(403).end('Forbidden');
   }
-  const fallback = join(DIST, 'index.html');
-  if (existsSync(fallback)) {
-    return res.writeHead(200, { 'Content-Type': MIME['.html'] }).end(readFileSync(fallback));
-  }
+  if (serveStatic(file, res)) return;
+  // Unknown paths fall through to the SPA shell so client routing works.
+  if (serveStatic(join(DIST_ROOT, 'index.html'), res)) return;
   res.writeHead(404).end('Not found');
 });
 
