@@ -211,9 +211,9 @@ const EXAMPLES = [
   { label: 'Paris → Marseille',
     from: { name: 'Paris', lat: 48.8809, lon: 2.3549 },
     to: { name: 'Marseille', lat: 43.3025, lon: 5.3803 }, hour: 8 },
-  { label: 'Zurich → Milano',
-    from: { name: 'Zürich', lat: 47.3779, lon: 8.5403 },
-    to: { name: 'Milano', lat: 45.4863, lon: 9.2043 }, hour: 8 },
+  { label: 'Frankfurt → Berlin',
+    from: { name: 'Frankfurt', lat: 50.1067, lon: 8.6628 },
+    to: { name: 'Berlin', lat: 52.5118, lon: 13.3782 }, hour: 8 },
   { label: 'Madrid → Barcelona',
     from: { name: 'Madrid', lat: 40.4064, lon: -3.6909 },
     to: { name: 'Barcelona', lat: 41.3790, lon: 2.1400 }, hour: 8 },
@@ -223,9 +223,9 @@ const EXAMPLES = [
   { label: 'Berlin → Warszawa',
     from: { name: 'Berlin', lat: 52.5118, lon: 13.3782 },
     to: { name: 'Warszawa', lat: 52.2288, lon: 21.0030 }, hour: 8 },
-  { label: 'Zurich → Hamburg, sleeper',
-    from: { name: 'Zürich', lat: 47.3779, lon: 8.5403 },
-    to: { name: 'Hamburg', lat: 53.5528, lon: 10.0067 }, hour: 19 },
+  { label: 'Hamburg → Zürich',
+    from: { name: 'Hamburg', lat: 53.5528, lon: 10.0067 },
+    to: { name: 'Zürich', lat: 47.3779, lon: 8.5403 }, hour: 8 },
 ];
 
 export default function App() {

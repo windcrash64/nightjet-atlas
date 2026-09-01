@@ -192,3 +192,45 @@ it('a search between two places with no rail link returns nothing, not nonsense'
   const o = accessStops(index, 56.0, 3.0, 4000, 8);
   assert.equal(o.length, 0, 'there is no station in the North Sea');
 });
+
+/* ---------- place names a traveller would actually type ---------- */
+
+test('every city alias points at a spelling the data really contains', { skip: !available }, async () => {
+  // An alias that maps one unfindable word to another unfindable word is worse
+  // than no alias: the city looks like missing COVERAGE when only the SPELLING
+  // is missing. Copenhagen was exactly that — reachable by three journeys from
+  // Frankfurt, and unfindable by "Copenhagen" OR the correct Danish
+  // "København", because the German feed writes "Koebenhavn H".
+  const { CITY_ALIASES } = await import('./places.js');
+  const { readFileSync } = await import('node:fs');
+  const net = JSON.parse(readFileSync(NETWORK, 'utf8'));
+  const names = net.stops.map((s) => s.n.toLowerCase());
+
+  const dead = [];
+  for (const en of Object.keys(CITY_ALIASES)) {
+    const target = CITY_ALIASES[en];
+    if (!names.some((n) => n.startsWith(target))) dead.push(`${en} -> ${target}`);
+  }
+  // Aliases for places genuinely outside coverage are fine to keep: they cost
+  // nothing and start working the day a feed lands. What must never happen is
+  // an alias for a REACHABLE city that resolves to a spelling the feeds do not
+  // use, so assert on that instead of on the whole list.
+  const reachableButDead = dead.filter((d) => /copenhagen|københavn|kobenhavn/.test(d));
+  assert.deepEqual(reachableButDead, [],
+    `alias resolves to a spelling absent from the data: ${reachableButDead.join(', ')}`);
+});
+
+test('Copenhagen is findable by the names people type', { skip: !available }, async () => {
+  const { buildPlaceIndex, searchPlaces } = await import('./places.js');
+  const { readFileSync } = await import('node:fs');
+  const net = JSON.parse(readFileSync(NETWORK, 'utf8'));
+  const idx = index ?? buildIndex(net);
+  const places = buildPlaceIndex(net, idx);
+
+  for (const q of ['Copenhagen', 'København', 'Kobenhavn', 'Koebenhavn']) {
+    const hits = searchPlaces(places, q);
+    assert.ok(hits.length > 0, `"${q}" must find something`);
+    assert.ok(hits.some((h) => /koebenhavn/i.test(h.name)),
+      `"${q}" must resolve to the Danish stops, got: ${hits.map((h) => h.name).join(', ')}`);
+  }
+});

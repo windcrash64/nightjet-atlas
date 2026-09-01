@@ -59,7 +59,16 @@ export const CITY_ALIASES = Object.assign(Object.create(null), {
   milan: 'milano', rome: 'roma', naples: 'napoli', turin: 'torino',
   geneva: 'genève', zurich: 'zürich', basle: 'basel', lucerne: 'luzern',
   seville: 'sevilla', saragossa: 'zaragoza', corunna: 'coruña',
-  lisbon: 'lisboa', copenhagen: 'københavn', gothenburg: 'göteborg',
+  lisbon: 'lisboa',
+  // The German feed transliterates rather than using ø: the stops are
+  // "Koebenhavn H" and "Koebenhavns Lufthavn st". Copenhagen IS reachable —
+  // three journeys from Frankfurt — but neither "Copenhagen" nor the correct
+  // Danish "København" matched anything, so the city was in the data and
+  // unfindable by every spelling a traveller would type. An alias that maps
+  // one unfindable word to another unfindable word is worse than none: it
+  // looks like coverage is missing when only the spelling is.
+  copenhagen: 'koebenhavn', københavn: 'koebenhavn', kobenhavn: 'koebenhavn',
+  gothenburg: 'göteborg',
   brussels: 'bruxelles', antwerp: 'antwerpen', ghent: 'gent',
   'the hague': 'den haag', thehague: 'den haag',
 });
