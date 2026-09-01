@@ -37,8 +37,11 @@ before(() => {
 });
 
 function plan(from, to, hour = 8) {
-  const o = accessStops(index, ...PLACES[from], 4000, 8);
-  const d = accessStops(index, ...PLACES[to], 4000, 8);
+  // Same radius and limit the server uses. Testing narrower settings than
+  // production means testing something nobody runs: at 4km/8 the Berlin-Munich
+  // direct ICE disappears entirely.
+  const o = accessStops(index, ...PLACES[from], 8000, 16);
+  const d = accessStops(index, ...PLACES[to], 8000, 16);
   return searchWindow(index, o, d, hour * 60, {
     windowMin: 12 * 60, stepMin: 180, maxRounds: 3, maxJourneys: 8,
   });

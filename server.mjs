@@ -58,13 +58,17 @@ function handleSearch(body, res) {
   }
 
   const t0 = Date.now();
-  // A 25km sweep pulls in suburban halts that beat the main station by a few
-  // hundred metres, so every journey gained a pointless local hop before the
-  // real train. 4km covers a city's own stations without reaching its
-  // commuter belt, and treating access distance as zero within that radius
-  // stops a 300m walk from deciding which station "wins".
-  const origins = accessStops(index, from.lat, from.lon, 4000, 8);
-  const dests = accessStops(index, to.lat, to.lon, 4000, 8);
+  // A city's main stations can sit further apart than a tight radius allows:
+  // Paris Gare de Lyon is 4,248m from Gare du Nord, so a 4km sweep excluded it
+  // by 248 metres and Paris-Marseille lost every TGV. 8km covers a large city's
+  // termini; accessStops then ranks by long-distance service and spreads its
+  // picks across DIFFERENT stations, which is what keeps suburban halts out.
+  // 16 rather than 8: a major station appears once per FEED with a different
+  // spelling — Marseille Saint-Charles has three records — so a tight cap can
+  // drop the very record a service calls at. Extra origin stops cost one
+  // pattern-scan each, which the search absorbs.
+  const origins = accessStops(index, from.lat, from.lon, 8000, 16);
+  const dests = accessStops(index, to.lat, to.lon, 8000, 16);
 
   if (!origins.length || !dests.length) {
     return json(res, 200, {

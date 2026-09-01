@@ -38,6 +38,13 @@ const LONG_DISTANCE_CLASSES = new Set([
 ]);
 
 export function isLongDistance(svc) {
+  // The ingester records this from the feed's own route_type where the feed
+  // says so (GTFS extended types 101-105). That is the only reliable signal
+  // for SNCF, whose labels are corridor descriptions — "Paris - Marseille -
+  // Toulon TGV" — with no service-class token to read. Guessing from the name
+  // made every French TGV a local train, and Paris-Marseille returned nothing.
+  if (svc.l != null) return svc.l === 1;
+
   if (svc.m === 'night_rail') return true;
   const name = (svc.s || '').trim().toUpperCase();
   if (!name) return false;
@@ -201,9 +208,50 @@ export function accessStops(index, lat, lon, radiusM = 4000, limit = 8) {
 
   // Prefer stops that are actually served, then the nearer of those.
   scored.sort((a, b) => b.longDistance - a.longDistance || a.distanceM - b.distanceM);
+
+  // Widening the radius to 8km (needed so Paris Gare de Lyon, 4,248m from Gare
+  // du Nord, is reachable at all) pulled in suburban halts that no intercity
+  // train serves, and journeys grew a throwaway S-Bahn hop to escape them.
+  // Once a city has genuinely long-distance stops, only those are access
+  // points; a place served solely by local trains keeps all of its stops.
+  const served = scored.filter((s) => s.longDistance > 0);
+  const candidates = served.length ? served : scored;
+
+  // Spread the picks across a city's DIFFERENT stations rather than filling
+  // the list with platforms of one. Paris Gare du Nord has many entries (every
+  // Eurostar and Thalys calls there), so taking the top eight by score gave
+  // eight northern platforms and no Gare de Lyon — and Paris to Marseille,
+  // which leaves from Gare de Lyon, lost its TGVs and fell to 471 minutes.
+  // Group by LOCATION, not by name. The same physical station appears once per
+  // feed with different spellings — "Marseille St Charles", "Marseille
+  // Saint-Charles" and "Marseille-Saint-Charles" are three records of one
+  // station — so grouping by name kept one spelling and dropped the very
+  // record the TGV actually calls at, leaving Paris-Marseille with no journeys.
+  // A 400m grid cell reliably separates distinct termini while merging the
+  // duplicates of one.
+  const cellOf = (s) => {
+    const st = stops[s.idx];
+    return `${Math.round(st.y * 275)}:${Math.round(st.x * 175)}`;
+  };
+
+  const picked = [];
+  const seenCell = new Map();
+  for (const pass of [1, 2, 8]) {
+    for (const s of candidates) {
+      if (picked.length >= limit) break;
+      if (picked.includes(s)) continue;
+      const cell = cellOf(s);
+      const used = seenCell.get(cell) ?? 0;
+      if (used >= pass) continue;
+      seenCell.set(cell, used + 1);
+      picked.push(s);
+    }
+    if (picked.length >= limit) break;
+  }
+
   // Within a city the access walk is not the differentiator; zero it so the
   // search compares trains rather than which platform is 200m closer.
-  return scored.slice(0, limit).map((s) => ({ idx: s.idx, distanceM: 0, name: s.name }));
+  return picked.map((s) => ({ idx: s.idx, distanceM: 0, name: s.name }));
 }
 
 /**

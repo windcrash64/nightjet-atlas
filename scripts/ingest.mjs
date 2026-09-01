@@ -9,7 +9,7 @@
  * Run: node scripts/ingest.mjs
  */
 
-import { mkdirSync, writeFileSync, readFileSync, existsSync, createReadStream } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, createReadStream, statSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { execSync } from 'node:child_process';
 import { join } from 'node:path';
@@ -48,14 +48,35 @@ function splitLine(line) {
   return out.map((s) => s.replace(/^"|"$/g, ''));
 }
 
-async function download(feed) {
+/** Reuse a download for this long before fetching again. */
+const CACHE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+
+async function download(feed, { force = false } = {}) {
   mkdirSync(CACHE, { recursive: true });
   const zip = join(CACHE, `${feed.id}.zip`);
   const dir = join(CACHE, feed.id);
 
+  // Re-fetching 213MB on every run is slow and rude — OVapi returned HTTP 429
+  // after a few iterations of exactly that. Timetables change daily at most, so
+  // a cached copy from this morning is the same data.
+  if (!force && existsSync(zip) && existsSync(join(dir, 'stop_times.txt'))) {
+    const age = Date.now() - statSync(zip).mtimeMs;
+    if (age < CACHE_MAX_AGE_MS) {
+      console.log(`  ${feed.id}: cached (${(age / 3600000).toFixed(1)}h old)`);
+      return dir;
+    }
+  }
+
   process.stdout.write(`  ${feed.id}: fetching… `);
   const res = await fetch(feed.url, { redirect: 'follow' });
-  if (!res.ok) throw new Error(`${feed.id}: HTTP ${res.status}`);
+  if (!res.ok) {
+    // A rate limit or an outage should not throw away a usable local copy.
+    if (existsSync(join(dir, 'stop_times.txt'))) {
+      console.log(`HTTP ${res.status} — using the cached copy`);
+      return dir;
+    }
+    throw new Error(`${feed.id}: HTTP ${res.status} and no cached copy to fall back on`);
+  }
   const buf = Buffer.from(await res.arrayBuffer());
   writeFileSync(zip, buf);
   console.log(`${(buf.length / 1048576).toFixed(1)} MB`);
@@ -86,6 +107,38 @@ function pickLabel(short, long) {
   if (short && SERVICE_CLASS.test(short)) return short;
   if (long && long.length <= 48) return long;
   return short || long || null;
+}
+
+/**
+ * Whether a route is long-distance, decided from the feed rather than the name.
+ *
+ * GTFS extended route types: 101 high-speed, 102 long-distance, 103 inter-
+ * regional, 105 sleeper. Types 106+ are regional. The plain type 2 says only
+ * "rail", so for those feeds we still fall back to the service designation.
+ * https://gtfs.org/schedule/reference/#routestxt
+ */
+const SERVICE_CLASSES = new Set([
+  'ICE', 'ICN', 'IC', 'EC', 'ECE', 'EN', 'NJ', 'RJ', 'RJX',
+  'TGV', 'THA', 'FR', 'AVE', 'AVLO', 'ALVIA', 'AVANT', 'IR', 'EST', 'FLX', 'D',
+]);
+
+function isLongDistanceRouteType(routeType, shortName = '', longName = '') {
+  const t = Number(routeType);
+  if (t >= 100 && t <= 105) return true;
+  if (t >= 106 && t < 200) return false;      // regional: the feed is explicit
+
+  // Plain type 2 says only "rail", so read the designation. SNCF puts an
+  // internal code in route_short_name ("631B") and the class at the END of
+  // route_long_name ("Paris - Marseille - Toulon TGV"), so both fields have to
+  // be checked — reading only the short name made every French TGV a local
+  // train and left Paris-Marseille with no direct service at all.
+  const cls = shortName.trim().toUpperCase().split(/[\s\d]/)[0];
+  if (SERVICE_CLASSES.has(cls)) return true;
+
+  for (const token of longName.toUpperCase().split(/[^A-Z0-9]+/)) {
+    if (token && SERVICE_CLASSES.has(token.replace(/\d+$/, '') || token)) return true;
+  }
+  return false;
 }
 
 /** GTFS route_type -> our mode vocabulary. https://gtfs.org/schedule/reference/#routestxt */
@@ -160,6 +213,13 @@ async function ingestFeed(feed) {
     routes.set(r.route_id, {
       short,
       long,
+      // GTFS extended route types 101-105 mean high-speed and long-distance
+      // rail. Recording that here is the only reliable signal for a feed like
+      // SNCF's, whose labels are corridor descriptions ("Paris - Marseille -
+      // Toulon TGV") with no service-class token for a name-based classifier to
+      // find. Without it every French TGV counted as a local train, and
+      // Paris-Marseille returned no journeys at all.
+      longDistance: isLongDistanceRouteType(r.route_type, short, long),
       // The label a traveller would recognise. German feeds put the service
       // designation in route_short_name ("ICE 29"); SNCF puts an internal line
       // code there ("C30", "P53") and the actual corridor in route_long_name
@@ -235,6 +295,7 @@ async function ingestFeed(feed) {
     services.push({
       id: tripId,
       service: route.label || trip.headsign || null,
+      longDistance: route.longDistance,
       mode: route.mode,
       operator: route.operator,
       headsign: trip.headsign || null,
@@ -271,6 +332,7 @@ async function main() {
       services.push({
         s: svc.service, m: svc.mode, o: svc.operator,
         h: svc.headsign, c: calls, f: p.feed.id,
+        l: svc.longDistance ? 1 : 0,
       });
     }
   }
