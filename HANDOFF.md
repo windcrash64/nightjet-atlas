@@ -94,14 +94,11 @@ everywhere, enforced by a test.
   offset is added, because journeys crossing that boundary would be silently
   hours wrong.
 - **The 4,132-airport dataset is bundled but unused.** No flight routing yet.
-- **The date is server-side only.** /api/search takes a YYYYMMDD and defaults
-  to today, but nothing in the UI lets you pick one. That is the next obvious
-  feature now that the calendar is real.
-- **A sparse corridor can return nothing rather than something bad.**
-  Zurich–Hamburg at 19:00 today has no good option — the only itinerary the
-  unfiltered search finds is 14 hours with a 131-minute wait at Mannheim — so
-  the app shows none. That is the honest answer, but the UI should say *why*
-  rather than looking broken, and offering the next day would serve better.
+
+- **A sparse corridor can honestly return nothing.** The empty state now says
+  so and offers "leave earlier" / "try the next day" rather than blaming
+  coverage, but there is no "next departure after this window" search — if the
+  only train is at 06:00 tomorrow, nothing tells you that.
 
 ## What the research established
 
