@@ -1,134 +1,108 @@
-# Nightjet Atlas
+# Where next
 
-**Some journeys happen while you sleep.** This is a journey planner that draws
-the night.
+**Every way from A to B, drawn on the world.**
 
-**Live: https://nightjet-atlas.pages.dev**
+Type two places. Get the real trains between them — ranked by how long they
+take, how many times you change, and whether you can sleep through it — with
+the journey drawn on a 3D globe built from actual geometry.
 
-Europe still runs sleeper trains. Flight search cannot show you why that
-matters, because a bed is not a price and darkness is not a duration. Rome2Rio
-renders the ÖBB Nightjet from Vienna to Rome as one flat row —
-`Night train 14h TRY3,300–8,500` — ranked below a flight badged "BEST", with no
-departure time, no arrival time, and no indication that eight of those fourteen
-hours are spent asleep in a bed. A model of `[mode][duration][price]` is
-structurally incapable of making the argument for a night train.
-
-So this one draws the journey instead.
+It runs on transit data we ingest ourselves from the operators, so a search
+costs compute we already pay for rather than money per request.
 
 ## What it does
 
-Every journey renders as a **Marey/Ibry graphical train schedule** — the 1878
-form that made railway timetables legible, and the cover of Tufte's *Visual
-Display of Quantitative Information*. Time runs left to right, distance bottom
-to top; the slope of the line is speed and a flat step is a stop.
+Search Zurich to Hamburg on an evening and you get six real options, including
+`NJ 2870` leaving at 21:59 and arriving 08:11 — ten hours, every one of them
+asleep, no hotel — alongside the seven-hour version that changes once at Basel.
+That comparison is the product. A list of departure times cannot make it; you
+have to see the sleeper next to the fast train to know which one you want.
 
-Behind the line is **the real sky**. Civil, nautical and astronomical twilight
-are computed from the sun's actual position along the route — interpolated to
-the traveller's moving coordinates, because an eastbound night train really does
-meet dawn earlier than the city it left. Those bands are not decoration; they
-are the argument. A night train draws a long line straight through the dark and
-arrives in the morning. A day journey draws a short scratch across the light.
+- **189,209 stops and 384,515 services** from six feeds covering Germany,
+  France, Spain, Switzerland and the Netherlands.
+- **Reach is wider than those five countries.** A cross-border service carries
+  its foreign stops with it, so routing to Warsaw, Prague, Budapest,
+  Copenhagen, Brussels, Vienna, Milan, Zagreb, Ljubljana and London St Pancras
+  works today.
+- **RAPTOR-style routing over patterns**, not trips. Median cold search 383ms,
+  worst 448ms; repeat searches 33–38ms.
+- **A real globe**, Natural Earth vector geometry — no map tiles, no API key,
+  no third-party request — framed on the journey by computing the chord it
+  subtends.
+- **The list explains itself.** On a corridor where one train runs all day it
+  says so, with the median gap between its departures, rather than showing you
+  eight near-identical rows and letting you wonder what broke.
 
-Verified example, live from the API:
+## What it refuses to do
 
-```
-Vienna 18:07 ────────────────────→ Rome 09:14 (+1)
-NJ 40233 · ÖBB · 15h 07m · 1 transfer · 69% after dark
-12h 15m in a bed — you arrive the next morning without paying for a hotel night
-```
+**It never shows a price, and never estimates one.** Open feeds carry
+schedules, not fares, and there is no free legitimate source of European rail
+prices: Amadeus Self-Service was decommissioned on 2026-07-17, Duffel's terms
+prohibit metasearch, and scraping Google violates its `robots.txt`. `price` is
+`null` everywhere and there is no code path that invents one. A test enforces
+it.
 
-It also does ordinary door-to-door multimodal routing — address to address,
-including the local legs at both ends that flight search ignores. Heathrow
-Terminal 2 to Charing Cross is 49 minutes on the Heathrow Express and the
-Bakerloo line, and that is part of your journey whether or not anyone shows it
-to you.
+**It never claims a feature it does not render.** Badges appear only when they
+change a decision — "Fastest" needs a 15-minute margin over the runner-up,
+because a three-minute win is advice to wait an hour for nothing.
 
-## What this app refuses to do
-
-**It never shows a price, and it never estimates one.** Open transit data
-carries schedules, not fares. There is no free, legitimate source of real
-European rail prices — this was researched thoroughly and the honest answer is
-that Amadeus Self-Service was decommissioned in July 2026, Duffel's terms
-prohibit metasearch, and scraping Google Flights violates its `robots.txt`. So
-where a fare exists the app links to the operator who sells it, and where one
-does not it says so. A `price` field that is `null` stays `null`; there is no
-code path that invents a number. There is a test that enforces this.
-
-**It never claims data it did not receive.** Every leg carries a source state —
-`live` when the operator is reporting realtime data, `scheduled` when it is a
-published timetable, `walking` when there is no service to be late. Live data
-gets the only saturated colour on the page. Where routing fails, the app shows
-nothing rather than something plausible.
-
-**It does not pretend its coverage is universal.** Open transit feeds are strong
-across Europe, Japan and parts of North America, and thin or absent elsewhere.
-Istanbul returns no itineraries. That is a gap in the data, and the app says so
-rather than implying no route exists.
-
-## Design
-
-The palette follows Cassandre's *Nord Express* (1927) — "a polyphony of greys:
-the cold smoke, the polished steel of the rods, the velvet depth of the sky. At
-their heart, a single red flares." A wide tonal blue-grey range carries all the
-information, and exactly one saturated red is reserved for live realtime data.
-Data honesty becomes the loudest colour on the page instead of a footnote —
-which is the right emphasis, because the most common complaint from real
-Nightjet riders is delays.
-
-Type is **Overpass**, drawn from the 1945 FHWA highway signage alphabet, with
-Overpass Mono for times and tabular figures.
-
-The line draws on load and then holds before settling — after Hans Hilfiker's
-1944 Swiss railway clock, whose second hand sweeps in 58.5 seconds and then
-*pauses* at twelve awaiting the master impulse. Motion that waits rather than
-eases. It respects `prefers-reduced-motion`.
+**It shows where its data came from and when.** EU Delegated Regulation
+2017/1926 Art. 8(3) requires the source and last-update time wherever this data
+is reused, and the footer carries both.
 
 ## Running it
 
 ```bash
 npm install
-npm run dev          # Vite dev server
-node dev-proxy.mjs   # serves the two API functions locally, in another shell
+node scripts/ingest.mjs   # downloads the feeds, builds src/data/network.json (~98MB, gitignored)
+                          # Switzerland needs headroom: NODE_OPTIONS=--max-old-space-size=6144
+node server.mjs           # routing API on :8080, also serves dist/
+npm run dev               # UI on :5173, proxies /api to :8080
 ```
 
-Then open http://127.0.0.1:5180.
-
 ```bash
-npm test             # 22 tests, no network required
-npm run build        # ~69 KB gzipped
-npm run data:airports  # regenerate the airport dataset from OurAirports
+npm test                  # 74 tests, no network required
+npm run build
+node scripts/bench.mjs    # cold search latency per corridor
 ```
 
 ## Deploying
 
-Static assets plus two Cloudflare Pages Functions. There is no server to run.
+A long-lived Node process on a small VPS. The server holds **451MB resident**
+and spends 3.9s building its index at startup, so it wants a box it can stay
+warm on — not Cloudflare Workers (128MB), not a Lambda cold start per request.
+A 1GB VPS is enough.
 
-```bash
-npm run build
-npx wrangler pages deploy dist
-```
+That number is load-bearing and was measured, not estimated. It used to be
+1.4GB: the network is millions of small arrays, and as plain JavaScript objects
+each `[stop, arrive, depart]` triple cost more in object header than the twelve
+bytes inside it. The hot structures — 3.2M stop-times, 3.6M footpaths, 3.2M
+stop→service entries — are now CSR typed-array columns, which took heap from
+1,205MB to 176MB and halved search latency. The column widths are asserted by
+tests in `src/lib/calls.test.js`, because the hosting decision depends on them.
 
-The functions in `functions/api/` proxy Transitous server-side — necessary
-because its policy requires an identifying `User-Agent`, which a browser cannot
-set — and cache responses at the edge to keep load off a volunteer service.
+## Data and licences
 
-Deliberately **not** Next.js: a hello-world Next app on the Cloudflare adapter
-measures 940 KB gzipped against a 3 MB free-tier Worker limit, before any
-application code. This app is 69 KB, and static assets do not count against that
-limit at all.
+Six feeds, all fetched from the publishers directly. Read
+[DATA_SOURCES.md](DATA_SOURCES.md) and `data/sources/registry.json` before
+deploying: they record every source, its licence, its attribution requirement,
+and — as importantly — the sources investigated and rejected, with reasons.
 
-## Licence and data
+| Feed | Licence |
+|---|---|
+| Germany long-distance, Germany regional, Spain (Renfe) | CC-BY-4.0 |
+| Netherlands | CC0-1.0 |
+| Switzerland | opentransportdata.swiss terms of use |
+| France (SNCF) | ODbL-1.0 |
 
-The code is MIT. **The data is not**, and one of its constraints shapes this
-whole project: Transitous prohibits commercial use and requires that consuming
-projects be open source. This app is therefore open source and non-commercial by
-design — that is the condition under which the data may be used at all.
+Two constraints worth knowing before you touch this:
 
-Read [DATA_SOURCES.md](DATA_SOURCES.md) before deploying anything. It records
-every source, its licence, its attribution requirement, and the sources that
-were investigated and rejected, with the reasons.
+- **SNCF is ODbL**, whose share-alike attaches to a derived *database*. Keep
+  `src/data/network.json` unpublished as a dataset while SNCF is in it.
+- **Nothing here depends on `api.transitous.org`**, and nothing should. Its
+  terms prohibit commercial use and require consuming projects be open source.
+  Its feed *catalogue* is CC0 and was legitimate to read as a map of
+  publishers.
 
-Routing and place search by [Transitous](https://transitous.org/) (MOTIS) over
-open transit feeds — [data sources](https://transitous.org/sources/). Geometry
-© [OpenStreetMap contributors](https://www.openstreetmap.org/copyright). Airport
-data from [OurAirports](https://ourairports.com/data/) (public domain).
+The code is MIT. Geometry from [Natural Earth](https://www.naturalearthdata.com/)
+(public domain) via world-atlas. Airport data from
+[OurAirports](https://ourairports.com/data/) (public domain).
