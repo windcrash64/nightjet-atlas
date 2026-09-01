@@ -1,5 +1,5 @@
 {
-  "_comment": "Feed registry. Every entry must carry its licence and the attribution string that licence requires. EU Delegated Regulation 2017/1926 Art. 8(3) separately requires we display the source AND the last-update time of static data, regardless of licence — so `attribution` is not optional even for public-domain feeds. Feeds are fetched from their publishers directly, never through api.transitous.org, whose service terms forbid commercial use.",
+  "_comment": "Feed registry. Every entry must carry its licence and the attribution string that licence requires. EU Delegated Regulation 2017/1926 Art. 8(3) separately requires we display the source AND the last-update time of static data, regardless of licence — so `attribution` is not optional even for public-domain feeds. Feeds are fetched from their publishers directly, never through api.transitous.org, whose service terms forbid commercial use. TWO KINDS OF FIELD, AND THE DIFFERENCE IS A HAZARD: publisher, licence, licenceUrl and attribution are copied into src/data/network.json and rendered in the app footer, so an error in them is visible the moment the page loads. commercialUse and the status fields are governance metadata that reach NO code and NO screen — verified: network.json sources carry only id, publisher, licence, licenceUrl, attribution, timezones. A wrong licence status therefore fails silently and can sit here for months looking authoritative. That asymmetry is exactly how a rehost-authored CC-BY-4.0 tag on Poland was nearly taken as a licence. Treat every status field as a claim that needs a source and a date, not as a fact, and never let one through on a third party assertion.",
   "feeds": [
     {
       "id": "de-longdistance",
@@ -147,7 +147,7 @@
     {
       "id": "be-sncb",
       "status": "unconfirmed",
-      "reason": "The Belgian feed serves 1,489 rail routes but states NO licence at all — unlike its neighbours, which all carry CC-BY-4.0. Technically working, legally unestablished. Do not ingest until a licence is confirmed."
+      "reason": "The Belgian feed serves 1,489 rail routes but no licence has been established. Two different observations, kept distinct: the Transitous catalogue entry for SNCB has NO license field at all (checked on the parsed object), unlike every Belgian neighbour which carries CC-BY-4.0 — that is an observed absence. Separately, opendata.sncb.be does not resolve and the belgiantrain.be open-data page returned nothing extractable — that is a page that would not load. Neither is a refusal: nobody at SNCB has been asked. Technically working, legally unestablished, and resolvable the same way Denmark is."
     },
     {
       "id": "dk-rejseplanen",

@@ -81,10 +81,28 @@ everywhere, enforced by a test.
   nightjet-atlas.pages.dev deployment is still live and shows an older app.
 - **No payments.** Decided deliberately: build the product first, monetise with
   evidence. See the research summary below.
-- **Coverage stops at five countries.** Italy is NeTEx-only, Austria needs
-  Keycloak OAuth and its host refuses connections, Belgium states no licence.
-  Czechia and Poland were researched on 2026-09-01 and the answer was not the
-  expected one — see `docs/research/cz-pl-rail-feeds-2026-09.md`:
+- **Coverage stops at five countries — but that reads worse than it is.** Ten
+  feeds are excluded and only ONE publisher has actually refused (Transitous).
+  The rest break down as: three `unconfirmed` (Belgium, Denmark, Sweden — the
+  licence page would not load, which is an availability gap, not a decision),
+  one `claimed` (Poland), one `permitted` but blocked technically (Czechia),
+  one `permitted-with-condition` (DELFI realtime, whose share-alike would
+  reach the other feeds), and three that are unreachable, not-ingestible or
+  out of scope (Austria, Italy, German local transit). Every entry
+  in `data/sources/registry.json` now carries this status explicitly, because
+  a flat exclusion list made the project look far more blocked than it is.
+
+  **Denmark is the highest-leverage of the ten.** Copenhagen is the only
+  unserved capital in reach — zero services today, against Prague 166, Vienna
+  183 and Budapest 34, which cross-border trains already cover. The endpoint
+  is live and the archive is valid, so nothing technical stands in the way:
+  one email to Rejseplanen, asking specifically about redistributing
+  cross-border services (DSB is agency 203 carrying IC/ICL/RE plus
+  international RJ and ECE) in a commercial planner, decides it.
+
+  Italy is NeTEx-only and Austria's host refuses connections. Czechia and
+  Poland were researched on 2026-09-01 and the answer was not the expected one
+  — see `docs/research/cz-pl-rail-feeds-2026-09.md`:
   - **Poland is excluded on licence grounds.** No official rail GTFS exists;
     PKP is not even registered as a data provider on dane.gov.pl. The one
     official source is JSON behind manual approval, marked "all rights
