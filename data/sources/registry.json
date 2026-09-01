@@ -112,11 +112,11 @@
     },
     {
       "id": "dk-rejseplanen",
-      "reason": "Licence text could not be retrieved. Working feed, unverified terms."
+      "reason": "Working feed, unestablished terms, and the only unserved capital in reach — Copenhagen has ZERO services in our network today, unlike Prague (166), Vienna (183) and Budapest (34), which cross-border trains already cover. www.rejseplanen.info/labs/GTFS.zip serves a real 51MB zip keylessly (verified HTTP 206, valid archive) but no licence document has been retrievable by two independent attempts. Highest-value addition IF a licence can be confirmed; the block is legal, not technical. Ask Rejseplanen directly rather than searching again."
     },
     {
       "id": "se-trafiklab",
-      "reason": "Licence text could not be retrieved, and the download path is undocumented. Working feed, unverified terms."
+      "reason": "Works through an undocumented door. opendata.samtrafiken.se returns 403 without a key, but api.resrobot.se/gtfs/sweden.zip serves 43MB keylessly with Samtrafiken i Sverige AB as publisher in feed_info.txt (SJ, Snalltaget, VR Snabbtag, Oresundstag present). Being reachable is not being licensed, and this is not the documented distribution route. Do not build on it silently."
     },
     {
       "id": "pl-rail",
