@@ -67,6 +67,36 @@ export function isLongDistance(svc) {
   return false;
 }
 
+/**
+ * Does service `si` run on day `n` of the horizon?
+ *
+ * `n < 0` means "no particular day" and everything runs — that is how the
+ * router behaves when no date is asked for, which keeps the old behaviour
+ * available rather than making a date mandatory.
+ */
+export function runsOnDay(index, si, n) {
+  if (n < 0) return true;
+  if (n >= index.calendarDays) return true;   // beyond what the feed told us
+  return n < 30
+    ? (index.dayLo[si] & (1 << n)) !== 0
+    : (index.dayHi[si] & (1 << (n - 30))) !== 0;
+}
+
+/**
+ * Horizon day number for a YYYYMMDD date, or -1 when the index carries no
+ * calendar or the date falls outside it. -1 disables day filtering rather
+ * than returning nothing, because a planner that silently answers "no trains"
+ * for an out-of-range date is worse than one that answers approximately.
+ */
+export function dayNumberFor(index, ymd) {
+  if (!index.calendarEpoch || !ymd) return -1;
+  const toUtc = (v) => Date.UTC(
+    Math.floor(v / 10000), (Math.floor(v / 100) % 100) - 1, v % 100,
+  );
+  const n = Math.round((toUtc(ymd) - toUtc(index.calendarEpoch)) / 86400000);
+  return n >= 0 && n < index.calendarDays ? n : -1;
+}
+
 export function haversineM(aLat, aLon, bLat, bLon) {
   const R = 6371000;
   const dLat = ((bLat - aLat) * Math.PI) / 180;
@@ -91,6 +121,23 @@ export function buildIndex(network) {
   const calls = packCalls(services);
   // The nested arrays are dead now, and holding them would forfeit the saving.
   for (let si = 0; si < services.length; si++) services[si].c = null;
+
+  // Which of the horizon's days each service runs, as two 30-bit halves.
+  // Same reasoning as the calls above: 384,515 two-element arrays cost far
+  // more in headers than 384,515 pairs of Int32 slots.
+  //
+  // A service the feed's calendar never mentions gets ~0 — every bit set —
+  // rather than 0. Absent means "unknown", not "never": 18,398 services have
+  // no mask (SNCF 7,732, NL 5,954), and zeroing them would delete real trains
+  // from the answer on the strength of missing metadata.
+  const dayLo = new Int32Array(services.length);
+  const dayHi = new Int32Array(services.length);
+  for (let si = 0; si < services.length; si++) {
+    const d = services[si].d;
+    dayLo[si] = d ? d[0] : ~0;
+    dayHi[si] = d ? d[1] : ~0;
+    services[si].d = null;
+  }
 
   // Group trips that call at exactly the same stops in the same order. In this
   // network 113,835 trips collapse to 15,546 patterns — 7.3 trips per pattern,
@@ -199,6 +246,9 @@ export function buildIndex(network) {
     network, calls, patterns, patternsAtStop, patternOf,
     stopServices, stopServiceOffset,
     footTo, footMin, footOffset,
+    dayLo, dayHi,
+    calendarEpoch: network.calendarEpoch ?? null,
+    calendarDays: network.calendarDays ?? 0,
   };
 }
 
@@ -308,40 +358,93 @@ export function accessStops(index, lat, lon, radiusM = 4000, limit = 8) {
  */
 export function searchWindow(index, origins, destinations, fromMin, opts = {}) {
   const { windowMin = 12 * 60, stepMin = 120, maxJourneys = 8 } = opts;
+  // dayNumber rides along in opts and is forwarded to each search() probe.
   const all = [];
-  let cursor = fromMin;
   const end = fromMin + windowMin;
 
-  // Hard iteration bound. Each probe is a full round-based search, so the count
-  // is the entire cost of a request — leaving it to a loop condition is how a
-  // 400ms search became 10s. Six probes gives a useful spread of departures
-  // across the window while keeping the worst case predictable.
-  // Each probe is a full round-based search, so this number IS the request cost.
-  // Four probes across the window still surfaces morning/midday/evening choices;
-  // going to six roughly doubled latency for options that mostly deduped away.
-  const MAX_PROBES = 4;
+  // Hard iteration bound. Each probe is a full round-based search, so this
+  // number IS the request cost — leaving it to a loop condition is how a 400ms
+  // search became 10s.
+  //
+  // Four sufficed while every service was assumed to run every day. Once the
+  // calendar filters to the ~26% that actually run on a given date, corridors
+  // go sparse and probes come up empty more often, so the window needs more of
+  // them. Measured on the bench: 5 probes gives median 262ms but drops
+  // Frankfurt-Vienna from 7 options to 5; 8 costs median 364ms for nothing the
+  // dedupe keeps. Six is where the options stop improving and the latency has
+  // not yet run away.
+  const MAX_PROBES = 6;
 
-  for (let probe = 0; probe < MAX_PROBES && cursor <= end; probe++) {
-    const found = search(index, origins, destinations, cursor, { ...opts, maxJourneys: 6 });
-
-    if (!found.length) {
-      // An empty probe does NOT mean the day is over. Night trains leave late,
-      // and a quiet afternoon on a sparse corridor says nothing about the
-      // evening — stopping here is how the sleeper went missing. Jump by an
-      // even share of the remaining window so a fixed number of probes still
-      // reaches the late-evening departures at the far end of it.
-      const probesLeft = Math.max(1, MAX_PROBES - probe - 1);
-      cursor += Math.max(stepMin, Math.ceil((end - cursor) / probesLeft));
-      continue;
+  /**
+   * Departure minutes of services that run from an origin today and call at a
+   * destination later — the times a DIRECT journey could begin.
+   *
+   * These supplement the comb rather than replacing it. Three stride
+   * heuristics were tried first and each skipped a real train: sharing the
+   * remaining window compounded (one empty probe jumped four hours), a fixed
+   * 180-minute step from 19:00 probed 19:00/22:00/01:00, and snapping to the
+   * very next departure burned every probe inside 23 minutes because Zürich HB
+   * has a departure nearly every minute. Probing where a through train
+   * actually leaves is cheap and cannot step over one.
+   */
+  const departureCandidates = () => {
+    const destSet = new Set(destinations.map((d) => d.idx));
+    const day = opts.dayNumber ?? -1;
+    const times = new Set();
+    for (const o of origins) {
+      const start = index.stopServiceOffset[o.idx];
+      const stop = index.stopServiceOffset[o.idx + 1];
+      for (let k = start; k < stop; k++) {
+        const si = index.stopServices[k];
+        if (!runsOnDay(index, si, day)) continue;
+        const n = index.calls.count(si);
+        let boardAt = -1;
+        for (let ci = 0; ci < n; ci++) {
+          if (boardAt < 0) {
+            if (index.calls.stopAt(si, ci) === o.idx) boardAt = index.calls.departAt(si, ci);
+            continue;
+          }
+          if (destSet.has(index.calls.stopAt(si, ci))) { times.add(boardAt); break; }
+        }
+      }
     }
-    all.push(...found);
+    return [...times].sort((a, b) => a - b);
+  };
 
-    // Advance past the earliest departure we just found rather than by a fixed
-    // hour: a fixed step re-finds the same train from several start times and
-    // fills the list with identical rows. Never advance less than stepMin/2, so
-    // a dense corridor cannot burn every probe on consecutive departures.
-    const earliest = Math.min(...found.map((j) => j.departMin));
-    cursor = Math.max(cursor + Math.round(stepMin / 2), earliest + 1);
+  // The probe schedule, decided before any searching.
+  //
+  // An even comb keeps the whole window represented — it is what finds
+  // multi-leg journeys, whose first train need not go anywhere near the
+  // destination. The direct-service candidates then add the minutes that a
+  // comb structurally cannot find: on Zurich-Hamburg tonight only 21:00-21:55
+  // yields anything at all, 8% of a twelve-hour window, and every stride
+  // heuristic tried stepped over it.
+  const stride = Math.max(1, Math.ceil(windowMin / MAX_PROBES));
+  const schedule = new Set();
+  for (let m = fromMin; m <= end; m += stride) schedule.add(m);
+  for (const t of departureCandidates()) {
+    if (t >= fromMin && t <= end) schedule.add(t);
+  }
+
+  // A dense corridor can offer hundreds of candidates and each probe is a full
+  // round-based search, so keep the cost bounded by taking an even spread
+  // rather than the first N — which would search one busy hour and miss the
+  // evening entirely.
+  const ordered = [...schedule].sort((a, b) => a - b);
+  const budget = MAX_PROBES;
+  const probes = ordered.length <= budget
+    ? ordered
+    : Array.from({ length: budget }, (_, i) =>
+      ordered[Math.round((i * (ordered.length - 1)) / (budget - 1))]);
+
+  let lastFoundDepart = -Infinity;
+  for (const at of probes) {
+    // Skip a probe that can only re-find what the previous one already did.
+    if (at <= lastFoundDepart) continue;
+    const found = search(index, origins, destinations, at, { ...opts, maxJourneys: 6 });
+    if (!found.length) continue;
+    all.push(...found);
+    lastFoundDepart = Math.min(...found.map((j) => j.departMin));
   }
 
   return rank(dedupe(all), maxJourneys);
@@ -422,7 +525,9 @@ function rank(journeys, limit) {
 }
 
 export function search(index, origins, destinations, departAfterMin, opts = {}) {
-  const { maxRounds = 4, maxJourneys = 8 } = opts;
+  // -1 means no particular day, so everything runs. Passing a day is opt-in:
+  // a caller that does not care about dates gets the old behaviour.
+  const { maxRounds = 4, maxJourneys = 8, dayNumber = -1 } = opts;
   const { services } = index.network;
   const { calls } = index;
   const destSet = new Map(destinations.map((d) => [d.idx, d.distanceM]));
@@ -477,6 +582,11 @@ export function search(index, origins, destinations, departAfterMin, opts = {}) 
       // we can actually catch.
       let svcIdx = -1;
       for (const candidate of pattern.trips) {
+        // Skip a trip that does not run on the day asked for, rather than
+        // offering a Sunday-only train on a Tuesday. Measured on this network:
+        // only 99,072 of 384,515 services run on any given day, and the
+        // average service operates 11.5 days in 60.
+        if (!runsOnDay(index, candidate, dayNumber)) continue;
         const d = calls.departAt(candidate, pos);
         const buffer = label.get(stopIdx)?.kind === 'ride' ? MIN_TRANSFER_MIN : 0;
         if (d >= readyAt + buffer) { svcIdx = candidate; break; }

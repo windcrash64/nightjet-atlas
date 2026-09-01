@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildIndex, stopsNear, search, searchWindow, haversineM, isLongDistance } from './router.js';
+import { buildIndex, stopsNear, search, searchWindow, haversineM, isLongDistance, runsOnDay, dayNumberFor } from './router.js';
 
 /**
  * A tiny hand-built network. Real enough to exercise transfers, walking and
@@ -162,4 +162,86 @@ test('transfer count matches the number of rides minus one', () => {
     const rides = j.legs.filter((l) => l.mode !== 'walk').length;
     assert.equal(j.transfers, Math.max(0, rides - 1));
   }
+});
+
+/* ---------- operating days ---------- */
+
+/**
+ * The same network, but with a calendar: ICE 1 runs only on horizon day 0,
+ * NJ 9 only on day 5, and the rest carry no mask at all.
+ */
+function datedFixture() {
+  const f = fixture();
+  f.calendarEpoch = 20260901;
+  f.calendarDays = 60;
+  f.services[0].d = [1 << 0, 0];        // ICE 1: day 0 only
+  f.services[2].d = [1 << 5, 0];        // NJ 9:  day 5 only
+  f.services[3].d = [0, 1 << 1];        // RE 7:  day 31, in the high half
+  // ICE 2 deliberately has no `d` — the "unknown" case.
+  return f;
+}
+
+test('a service runs only on the days its mask names', () => {
+  const i = buildIndex(datedFixture());
+  assert.equal(runsOnDay(i, 0, 0), true, 'ICE 1 on day 0');
+  assert.equal(runsOnDay(i, 0, 1), false, 'ICE 1 not on day 1');
+  assert.equal(runsOnDay(i, 2, 5), true, 'NJ 9 on day 5');
+  assert.equal(runsOnDay(i, 2, 0), false, 'NJ 9 not on day 0');
+});
+
+test('the high half of the mask is read correctly', () => {
+  // Days 30-59 live in a second 30-bit integer. An off-by-30 here would make
+  // every service in the second month either always or never run.
+  const i = buildIndex(datedFixture());
+  assert.equal(runsOnDay(i, 3, 31), true, 'RE 7 on day 31');
+  assert.equal(runsOnDay(i, 3, 1), false, 'and not on day 1, the same bit in the low half');
+});
+
+test('a service with no calendar entry is treated as running, not as never', () => {
+  // 18,398 real services have no mask — SNCF 7,732, NL 5,954 — because their
+  // service_id falls outside the horizon. Zeroing them would delete real
+  // trains from the answer on the strength of missing metadata.
+  const i = buildIndex(datedFixture());
+  assert.equal(runsOnDay(i, 1, 0), true);
+  assert.equal(runsOnDay(i, 1, 42), true);
+});
+
+test('asking for no particular day runs everything', () => {
+  const i = buildIndex(datedFixture());
+  for (let si = 0; si < 4; si++) assert.equal(runsOnDay(i, si, -1), true);
+});
+
+test('a date maps to its horizon day, and out-of-range disables filtering', () => {
+  const i = buildIndex(datedFixture());
+  assert.equal(dayNumberFor(i, 20260901), 0, 'the epoch itself');
+  assert.equal(dayNumberFor(i, 20260906), 5);
+  assert.equal(dayNumberFor(i, 20261001), 30, 'across a month boundary');
+  // Refusing to answer for a date we have no calendar for would be worse than
+  // answering approximately, so -1 means "do not filter".
+  assert.equal(dayNumberFor(i, 20260831), -1, 'before the epoch');
+  assert.equal(dayNumberFor(i, 20270101), -1, 'past the horizon');
+});
+
+test('the search only offers trains that run on the day asked for', () => {
+  // The defect this exists to fix, end to end: NJ 9 is the only A->C service
+  // and it runs on day 5 alone.
+  const i = buildIndex(datedFixture());
+  const O = [{ idx: 0, distanceM: 0 }], D = [{ idx: 2, distanceM: 0 }];
+
+  const onDay5 = searchWindow(i, O, D, 1100, { windowMin: 300, dayNumber: 5 });
+  assert.ok(onDay5.some((j) => j.legs.some((l) => l.service === 'NJ 9')),
+    'the sleeper is offered on the day it runs');
+
+  const onDay1 = searchWindow(i, O, D, 1100, { windowMin: 300, dayNumber: 1 });
+  assert.equal(onDay1.some((j) => j.legs.some((l) => l.service === 'NJ 9')), false,
+    'and not on a day it does not');
+});
+
+test('an undated search still finds everything', () => {
+  const i = buildIndex(datedFixture());
+  const js = searchWindow(i, [{ idx: 0, distanceM: 0 }], [{ idx: 2, distanceM: 0 }], 400, {
+    windowMin: 16 * 60, stepMin: 120,
+  });
+  assert.ok(js.some((j) => j.legs.some((l) => l.service === 'NJ 9')),
+    'no date means no day filter, so the old behaviour is intact');
 });

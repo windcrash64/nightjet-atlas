@@ -12,7 +12,7 @@
 import { createServer } from 'node:http';
 import { readFileSync, statSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
-import { buildIndex, stopsNear, accessStops, searchWindow } from './src/lib/router.js';
+import { buildIndex, stopsNear, accessStops, searchWindow, dayNumberFor } from './src/lib/router.js';
 import { buildPlaceIndex, searchPlaces } from './src/lib/places.js';
 
 const PORT = Number(process.env.PORT || 8080);
@@ -72,6 +72,12 @@ const cache = new Map();
 const placeIndex = buildPlaceIndex(network, index);
 console.log(`  ${placeIndex.length.toLocaleString()} searchable places`);
 
+/** Today as YYYYMMDD, a local calendar day rather than an instant. */
+function todayYmd() {
+  const d = new Date();
+  return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+}
+
 function json(res, status, body, headers = {}) {
   const s = JSON.stringify(body);
   res.writeHead(status, {
@@ -93,6 +99,12 @@ function handleSearch(body, res) {
   // Number(null) === 0 and silently searched from midnight. `??` covers both.
   const { from, to } = body ?? {};
   const departHour = body?.departHour ?? 8;
+  // An optional YYYYMMDD. Omitted means today, which is what someone typing
+  // two cities almost always means. dayNumberFor returns -1 for anything
+  // outside the ingested horizon, which disables day filtering rather than
+  // answering "no trains" for a date we simply have no calendar for.
+  const date = Number(body?.date) || todayYmd();
+  const dayNumber = dayNumberFor(index, date);
   const ok = (p) => p && Number.isFinite(p.lat) && Number.isFinite(p.lon)
     && Math.abs(p.lat) <= 90 && Math.abs(p.lon) <= 180;
   if (!ok(from) || !ok(to)) {
@@ -140,11 +152,11 @@ function handleSearch(body, res) {
   // 3 rounds finds direct, one-change and two-change journeys, which covers
   // essentially every intercity trip; the 4th round tripled the search time to
   // surface options nobody picks.
-  const key = `${origins[0].idx}:${dests[0].idx}:${hour}`;
+  const key = `${origins[0].idx}:${dests[0].idx}:${hour}:${dayNumber}`;
   let journeys = cache.get(key);
   if (!journeys) {
     journeys = searchWindow(index, origins, dests, hour * 60, {
-      windowMin: 12 * 60, stepMin: 180, maxRounds: 3, maxJourneys: 8,
+      windowMin: 12 * 60, stepMin: 180, maxRounds: 3, maxJourneys: 8, dayNumber,
     });
     if (cache.size > 500) cache.clear();
     cache.set(key, journeys);
