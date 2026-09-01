@@ -196,3 +196,60 @@ test('each sort orders by what it claims', () => {
   assert.deepEqual(by('fastest'), [700, 900, 600]);
   assert.deepEqual(by('simplest'), [600, 700, 900]);
 });
+
+/* ---------- what darkness can and cannot be trusted to show ---------- */
+
+test('an ordinary daytime corridor gives several identically-lit ribbons', () => {
+  // Measured on the real network: Berlin->Munich across the router's 12h
+  // window on 15 Sep returns dark = .196 .000 .000 .000 .000 .186 .680 1.000.
+  // Four of eight are flat. This test exists so nobody rebuilds the list
+  // around darkness as the primary differentiator — length on the shared axis
+  // has to carry that read, and this is the evidence why.
+  const BERn = { lat: 52.5251, lon: 13.3694 }, MUCn = { lat: 48.1403, lon: 11.5583 };
+  const set = [8, 10, 12, 14].map((h) => j({
+    depart: h * 60, arrive: h * 60 + 245,
+    legs: [{ mode: 'rail', service: `ICE ${h}`, from: BERn, to: MUCn, departMin: h * 60, arriveMin: h * 60 + 245, intermediateStops: 5 }],
+  }));
+  const axis = timeAxis(set);
+  const darks = set.map((x) => ribbonFor(x, axis, 20260915).dark);
+  assert.deepEqual(darks, [0, 0, 0, 0],
+    'four midday departures are all fully lit, so the sky separates none of them');
+});
+
+test('a sleeper is known from the data, never from how dark it looks', () => {
+  // The same Zurich->Hamburg sleeper measures dark 1.000 in December and
+  // 0.752 in June, when it never reaches true night. Identifying a sleeper by
+  // blackness is wrong for a third of the year; hasSleeper is not.
+  const ZRH = { lat: 47.3779, lon: 8.5403 }, HAM = { lat: 53.5528, lon: 10.0067 };
+  const sleeper = (dateYmd) => {
+    const x = j({
+      depart: 1303, arrive: 1893, sleeper: 480,
+      legs: [{ mode: 'night_rail', service: 'NJ 470', from: ZRH, to: HAM, departMin: 1303, arriveMin: 1893, intermediateStops: 9 }],
+    });
+    return { j: x, r: ribbonFor(x, timeAxis([x]), dateYmd) };
+  };
+  const dec = sleeper(20261221);
+  const jun = sleeper(20260621);
+  assert.ok(dec.r.dark > jun.r.dark + 0.15,
+    `the same sleeper must measure much darker in winter: dec ${dec.r.dark.toFixed(3)} vs jun ${jun.r.dark.toFixed(3)}`);
+  assert.equal(dec.j.hasSleeper, true);
+  assert.equal(jun.j.hasSleeper, true, 'while hasSleeper is identical in both seasons');
+});
+
+test('a null coordinate produces no sky rather than a black ribbon', () => {
+  // router.js builds the walk to the first station as {name:'Start', lat:null}.
+  // A null latitude does not throw: it yields NaN altitudes, and
+  // twilightBand(NaN) returns 'night' because NaN fails every > comparison and
+  // falls through to the last branch. A midday journey would paint solid black
+  // with no error anywhere — the kind of plausible silent failure that ships.
+  const withNullStart = j({
+    depart: 600, arrive: 800,
+    legs: [
+      { mode: 'walk', service: null, from: { name: 'Start', lat: null, lon: null }, to: BER, departMin: 600, arriveMin: 610, intermediateStops: 0 },
+      { mode: 'rail', service: 'ICE 1', from: { name: 'Start', lat: null, lon: null }, to: MUC, departMin: 610, arriveMin: 800, intermediateStops: 4 },
+    ],
+  });
+  const r = ribbonFor(withNullStart, timeAxis([withNullStart]), 20260915);
+  assert.equal(r.dark, 0, 'unknown position must read as no sky, not as night');
+  assert.deepEqual(r.bands, []);
+});

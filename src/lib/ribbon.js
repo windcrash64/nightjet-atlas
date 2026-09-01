@@ -16,18 +16,36 @@
  * That is the whole product. You do not read "482 minutes asleep"; you see a
  * line cross into the dark and come out the other side.
  *
- * Two rules make it work:
+ * BUT DARKNESS CANNOT CARRY THE PRIMARY READ, and a design panel measuring
+ * this against the real network is the reason it does not. Berlin to Munich,
+ * the eight departures the router actually returns across its 12-hour window
+ * on 15 September:
  *
- *   1. ONE SHARED AXIS. Every ribbon in a result set is positioned and scaled
+ *   06:00 dark 0.196   08:00 dark 0.000   10:00 dark 0.000   12:00 dark 0.000
+ *   14:00 dark 0.000   16:00 dark 0.186   18:00 dark 0.680   20:00 dark 1.000
+ *
+ * Four of eight rows are identically, flatly lit. On an ordinary daytime
+ * corridor — which is most searches — the sky differentiates nothing. Worse,
+ * a sleeper cannot be identified BY its blackness either: the same panel
+ * measured a Zurich-Hamburg sleeper at dark 1.000 in December and 0.752 in
+ * June, when it never reaches true night at all. A design that says "the dark
+ * one is the sleeper" is wrong for a third of the year.
+ *
+ * So the layers are ranked, and lower numbers win when they conflict:
+ *
+ *   1. LENGTH ON ONE SHARED AXIS. Every ribbon is positioned and scaled
  *      against the same start and end minute, so a 4h option is physically
- *      shorter than a 15h one. Normalising each row to its own width — the
- *      obvious implementation — destroys exactly the comparison this exists
- *      to make.
- *   2. THE SKY IS COMPUTED, NOT DECORATIVE. lib/sun.js interpolates the sun's
- *      altitude along the moving route, so an eastbound sleeper meets dawn
- *      before the city it left. Measured on Frankfurt->Vienna: 30 minutes
- *      earlier than if you had stayed put. That is a real fact about the
- *      journey, drawn.
+ *      shorter than a 15h one. This carries the comparison. Normalising each
+ *      row to its own width — the obvious implementation — makes them the
+ *      same length and destroys the only thing the ribbon exists to do.
+ *   2. THE SLEEPER IS MARKED EXPLICITLY, from `hasSleeper` and `sleeperMin`,
+ *      never inferred from hue. That is data the router gives us; darkness is
+ *      an atmosphere that happens to correlate with it most of the year.
+ *   3. THE SKY IS COMPUTED, NOT DECORATIVE — the second thing you notice,
+ *      never the first. lib/sun.js interpolates the sun's altitude along the
+ *      moving route, so an eastbound sleeper meets dawn before the city it
+ *      left. Measured on Frankfurt->Vienna: 30 minutes earlier than if you had
+ *      stayed put. A real fact about the journey, drawn.
  */
 
 import { skyAlongJourney, darkFraction } from './sun.js';
@@ -116,9 +134,18 @@ export function ribbonFor(journey, axis, dateYmd, utcOffsetHours = 2) {
   const startMs = instantFor(dateYmd, journey.departMin, utcOffsetHours);
   const endMs = instantFor(dateYmd, journey.arriveMin, utcOffsetHours);
 
+  // Coordinates must be real numbers, not merely present. router.js builds the
+  // walk to the first station as `{ name: 'Start', lat: null, lon: null }`
+  // (router.js:752, :805), and a null latitude does not throw — it produces
+  // NaN altitudes, and twilightBand(NaN) returns 'night' because NaN fails
+  // every `>` comparison and falls through to the last branch. The result is a
+  // ribbon painted solid black for a midday journey, with no error anywhere.
+  // A plausible silent failure is the kind that ships.
+  const usable = (p) => p && Number.isFinite(p.lat) && Number.isFinite(p.lon);
+
   // 96 samples is about a band edge every 10 minutes on a 15-hour journey —
   // finer than the eye resolves at any width this is drawn at, and cheap.
-  const sky = (first?.from && last?.to)
+  const sky = (usable(first?.from) && usable(last?.to))
     ? skyAlongJourney(startMs, endMs, first.from, last.to, 96)
     : [];
 
