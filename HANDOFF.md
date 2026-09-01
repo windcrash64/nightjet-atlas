@@ -39,7 +39,14 @@ node scripts/bench.mjs  # cold search latency per corridor
   Prague, Budapest, Copenhagen, Brussels, Vienna, Milan, Zagreb, Ljubljana and
   London St Pancras.
 - RAPTOR-style routing over patterns rather than trips. Median cold search
-  **716ms**, worst 841ms, measured by `scripts/bench.mjs`.
+  **383ms**, worst 448ms, measured by `scripts/bench.mjs`. Warm (cached)
+  searches return in 33–38ms.
+- **The server holds 451MB resident**, measured on the running process. The
+  hot structures — 3.2M stop-times, 3.6M footpaths, 3.2M stop→service entries
+  — are CSR typed-array columns rather than millions of small JS arrays, which
+  is what took heap from 1,205MB to 176MB and halved search latency. Widths
+  are asserted by tests in `src/lib/calls.test.js`, because the deployment
+  maths depends on them.
 - Real 3D globe (Natural Earth vector geometry, no map tiles, no keys), framed
   on the journey by computing the chord it subtends.
 - Spot-checked against reality: Madrid–Barcelona 197min on AVE (real ~2h30),
@@ -58,8 +65,11 @@ everywhere, enforced by a test.
 
 ## Known gaps
 
-- **Not deployed.** The ~95MB network needs a small VPS (~€5–25/month), not
-  Cloudflare Pages. The old Nightjet Atlas deployment at
+- **Not deployed.** The server needs 451MB resident, so a 1GB VPS (~€5/month)
+  is enough — it was 1.4GB before the typed-array work, which would have
+  needed a 4GB box. Still not Cloudflare Pages or Workers (128MB), and still
+  not Lambda-shaped: the 3.9s index build wants a long-lived process, not a
+  cold start per request. The old Nightjet Atlas deployment at
   nightjet-atlas.pages.dev is still live and now shows a different, older app.
 - **No payments.** Decided deliberately: build the product first, monetise with
   evidence. See the research summary below.
