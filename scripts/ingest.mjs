@@ -175,6 +175,138 @@ function hhmmToMinutes(t) {
   return h * 60 + m; // GTFS allows >24h for trips past midnight; we keep that.
 }
 
+/**
+ * Which of the next HORIZON_DAYS each service runs, as a bitmask.
+ *
+ * Storing a date list per service would be enormous — the Swiss feed alone has
+ * 10.7 million calendar_dates rows. A 60-day horizon fits in a single number
+ * per service if we use a BigInt-free pair of 32-bit halves, but plain JS
+ * numbers are exact to 53 bits, so one number covers 53 days and two cover
+ * anything we need. 60 days is more than a journey planner needs to answer
+ * "today and the next few weeks", and the feeds themselves only publish a
+ * season ahead.
+ *
+ * calendar_dates.txt is streamed for the same reason stop_times.txt is: at
+ * 278MB the Swiss file cannot be held as one string.
+ */
+const HORIZON_DAYS = 60;
+
+/** Day 0 of the horizon: the date this ingest ran, as a local calendar day. */
+const EPOCH_YMD = (() => {
+  const now = new Date();
+  return now.getFullYear() * 10000 + (now.getMonth() + 1) * 100 + now.getDate();
+})();
+
+/**
+ * Pack a 60-day run mask into two 30-bit integers, `[days0_29, days30_59]`.
+ *
+ * Bitwise operators in JS coerce to int32, so 30 bits per half stays clear of
+ * the sign bit. A service the calendar never mentions returns null rather than
+ * all-zero: "we do not know" and "runs on no day" are different claims, and
+ * the router must be free to treat an unknown service as runnable rather than
+ * silently deleting a feed that ships no calendar at all.
+ */
+function packDays(slots) {
+  if (!slots) return null;
+  let lo = 0, hi = 0;
+  for (let n = 0; n < 30; n++) if (slots[n]) lo |= (1 << n);
+  for (let n = 30; n < HORIZON_DAYS; n++) if (slots[n]) hi |= (1 << (n - 30));
+  return [lo, hi];
+}
+
+function ymdToDayNumber(ymd, epochYmd) {
+  const toUtc = (v) => Date.UTC(
+    Math.floor(v / 10000), Math.floor(v / 100) % 100 - 1, v % 100,
+  );
+  return Math.round((toUtc(ymd) - toUtc(epochYmd)) / 86400000);
+}
+
+function dayNumberToYmd(n, epochYmd) {
+  const base = Date.UTC(
+    Math.floor(epochYmd / 10000), Math.floor(epochYmd / 100) % 100 - 1, epochYmd % 100,
+  );
+  const d = new Date(base + n * 86400000);
+  return d.getUTCFullYear() * 10000 + (d.getUTCMonth() + 1) * 100 + d.getUTCDate();
+}
+
+/**
+ * Resolve `service_id -> boolean[HORIZON_DAYS]`, starting at `epochYmd`.
+ * Reads calendar.txt for the weekly pattern and streams calendar_dates.txt for
+ * the exceptions. A feed may ship either or both — the Netherlands and France
+ * ship no calendar.txt at all, so a weekly-pattern-only reader loses them.
+ */
+async function readCalendar(dir, epochYmd) {
+  const runs = new Map();
+  const ensure = (id) => {
+    let d = runs.get(id);
+    if (!d) { d = new Uint8Array(HORIZON_DAYS); runs.set(id, d); }
+    return d;
+  };
+
+  const calPath = join(dir, 'calendar.txt');
+  if (existsSync(calPath)) {
+    for (const row of table(dir, 'calendar.txt')) {
+      const id = (row.service_id || '').trim();
+      if (!id) continue;
+      const days = [
+        row.monday, row.tuesday, row.wednesday, row.thursday,
+        row.friday, row.saturday, row.sunday,
+      ].map((v) => ((v || '').trim() === '1' ? 1 : 0));
+      const start = Number((row.start_date || '').trim()) || 0;
+      const end = Number((row.end_date || '').trim()) || 99999999;
+      const slots = ensure(id);
+      for (let n = 0; n < HORIZON_DAYS; n++) {
+        const ymd = dayNumberToYmd(n, epochYmd);
+        if (ymd < start || ymd > end) continue;
+        // Monday-first, matching the column order above.
+        const dow = (new Date(Date.UTC(
+          Math.floor(ymd / 10000), Math.floor(ymd / 100) % 100 - 1, ymd % 100,
+        )).getUTCDay() + 6) % 7;
+        if (days[dow]) slots[n] = 1;
+      }
+    }
+  }
+
+  const datesPath = join(dir, 'calendar_dates.txt');
+  if (existsSync(datesPath)) {
+    await new Promise((resolve, reject) => {
+      const rl = createInterface({
+        input: createReadStream(datesPath, { encoding: 'utf8' }),
+        crlfDelay: Infinity,
+      });
+      let cols = null;
+      rl.on('line', (line) => {
+        if (!line) return;
+        const c = splitLine(line);
+        if (!cols) {
+          // Column ORDER differs between feeds: the German ones write
+          // service_id,exception_type,date while everyone else writes
+          // service_id,date,exception_type. Reading by position gets a date
+          // where the exception type should be.
+          cols = {};
+          c.forEach((name, i) => {
+            cols[name.replace(/^﻿/, '').trim().replace(/^"(.*)"$/, '$1')] = i;
+          });
+          return;
+        }
+        const clean = (v) => (v ?? '').trim().replace(/^"(.*)"$/, '$1').trim();
+        const id = clean(c[cols.service_id]);
+        const ymd = Number(clean(c[cols.date]));
+        const kind = clean(c[cols.exception_type]);
+        if (!id || !ymd) return;
+        const n = ymdToDayNumber(ymd, epochYmd);
+        if (n < 0 || n >= HORIZON_DAYS) return;
+        if (kind === '1') ensure(id)[n] = 1;
+        else if (kind === '2') { const d = runs.get(id); if (d) d[n] = 0; }
+      });
+      rl.on('close', resolve);
+      rl.on('error', reject);
+    });
+  }
+
+  return runs;
+}
+
 async function ingestFeed(feed) {
   const dir = await download(feed);
 
@@ -188,6 +320,12 @@ async function ingestFeed(feed) {
   const stopRows = table(dir, 'stops.txt');
   const routeRows = table(dir, 'routes.txt');
   const tripRows = table(dir, 'trips.txt');
+
+  // Which days each service_id actually runs. Without this the planner offers
+  // every trip on every date: on the German long-distance feed only 160 of 899
+  // service_ids run all seven days, so 82% of them would be offered on days
+  // they do not operate.
+  const calendarRuns = await readCalendar(dir, EPOCH_YMD);
 
   const stops = new Map();
   for (const s of stopRows) {
@@ -325,6 +463,10 @@ async function ingestFeed(feed) {
       operator: route.operator,
       headsign: trip.headsign || null,
       serviceId: trip.serviceId,
+      // The 60-day horizon as two 30-bit integers. A per-service array would
+      // add 60 numbers to each of 384,515 services; two ints add two. Days
+      // 0-29 in the first, 30-59 in the second, bit n = day n.
+      days: packDays(calendarRuns.get(trip.serviceId)),
       calls: calls.map((c) => [c.stopId, c.arr, c.dep]),
     });
   }
@@ -358,6 +500,10 @@ async function main() {
         s: svc.service, m: svc.mode, o: svc.operator,
         h: svc.headsign, c: calls, f: p.feed.id,
         l: svc.longDistance ? 1 : 0,
+        // Which of the next 60 days this runs, as [days0_29, days30_59].
+        // Omitted entirely when the feed's calendar never mentions the
+        // service — absent means "unknown", which is not the same as "never".
+        ...(svc.days ? { d: svc.days } : {}),
       });
     }
   }
@@ -365,6 +511,11 @@ async function main() {
   mkdirSync(OUT, { recursive: true });
   const network = {
     generatedAt: new Date().toISOString(),
+    // Day 0 of every service's `d` bitmask. Without this the masks cannot be
+    // read back, and a stale network.json would silently answer for the wrong
+    // dates rather than refusing to.
+    calendarEpoch: EPOCH_YMD,
+    calendarDays: HORIZON_DAYS,
     sources: REGISTRY.feeds.map((f) => {
       const part = parts.find((p) => p.feed.id === f.id);
       return {
