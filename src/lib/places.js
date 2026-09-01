@@ -43,7 +43,15 @@ const CONNECTIVE = /^(am|an|auf|der|des|del|de|en|la|le|les|sur|upon)$/i;
  * these, searching "Vienna" returns nothing, which reads as missing coverage
  * rather than as a naming mismatch.
  */
-export const CITY_ALIASES = {
+// A null prototype, deliberately. As a normal object literal this inherits
+// Object.prototype, so CITY_ALIASES['constructor'] returns a FUNCTION rather
+// than undefined — and `??` does not catch it, because a function is not
+// nullish. `q` then became a function, `q.includes(' ')` threw inside an async
+// handler, and the unhandled rejection killed the whole process. A bare
+// `GET /api/places?q=constructor` took the server down; reproduced twice.
+// Object.create(null) removes the inherited names entirely, which fixes every
+// member of the class (valueOf, toString, hasOwnProperty, __proto__) at once.
+export const CITY_ALIASES = Object.assign(Object.create(null), {
   vienna: 'wien', munich: 'münchen', muenchen: 'münchen',
   cologne: 'köln', koeln: 'köln', nuremberg: 'nürnberg', nuernberg: 'nürnberg',
   hanover: 'hannover', brunswick: 'braunschweig',
@@ -54,7 +62,7 @@ export const CITY_ALIASES = {
   lisbon: 'lisboa', copenhagen: 'københavn', gothenburg: 'göteborg',
   brussels: 'bruxelles', antwerp: 'antwerpen', ghent: 'gent',
   'the hague': 'den haag', thehague: 'den haag',
-};
+});
 
 /** The city part of a station name. */
 export function cityNameFrom(stationName) {
@@ -163,7 +171,10 @@ export function buildPlaceIndex(network, index, { minStationScore = 3 } = {}) {
 export function searchPlaces(placeIndex, rawQuery, limit = 8) {
   const raw = String(rawQuery ?? '').trim().toLowerCase();
   if (raw.length < 2) return [];
-  const q = CITY_ALIASES[raw] ?? raw;
+  // Belt and braces over the null prototype above: whatever the lookup yields,
+  // only a string may reach the string methods below.
+  const alias = CITY_ALIASES[raw];
+  const q = typeof alias === 'string' ? alias : raw;
 
   const scored = [];
   for (const p of placeIndex) {
