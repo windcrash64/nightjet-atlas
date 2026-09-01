@@ -136,6 +136,14 @@ button.go:disabled { opacity: 0.45; cursor: progress; transform: none; }
   font: inherit; font-size: 0.82rem; padding: 5px 11px; border-radius: 2px;
   cursor: pointer; transition: color 140ms var(--editorial), border-color 140ms var(--editorial);
 }
+/* These chips are how a first-time visitor finds out what the app does, so
+   they are the worst controls to make hard to hit. At 31px they were under
+   the 44px minimum on touch. Raised only where there is no hover — a mouse
+   hits 31px fine, and padding them out on desktop would turn a quiet row of
+   suggestions into a row of buttons competing with the search itself. */
+@media (hover: none) {
+  .examples button { min-height: 44px; padding-inline: 14px; }
+}
 @media (hover: hover) {
   .examples button:hover { color: var(--text); border-color: var(--text-faint); }
 }
@@ -294,6 +302,11 @@ button.go:disabled { opacity: 0.45; cursor: progress; transform: none; }
   background: none; border: 1px solid var(--line); color: var(--text);
   font: inherit; font-size: 0.85rem; padding: 5px 11px; border-radius: 2px;
   cursor: pointer; transition: border-color 140ms var(--editorial);
+}
+/* Same reasoning as the example chips: the way out of a dead end must be
+   easy to hit. */
+@media (hover: none) {
+  .notice-actions button { min-height: 44px; padding-inline: 14px; }
 }
 @media (hover: hover) {
   .notice-actions button:hover { border-color: var(--text-faint); }
