@@ -38,3 +38,20 @@ countries ingested: Germany, France, Spain and Switzerland.
 - Search returns in 50–800ms; repeat searches hit the cache at ~30ms.
 - English city names resolve to local ones (Vienna→Wien, Munich→München,
   Cologne→Köln, Milan→Milano).
+
+## Second pass — example journeys and true reach
+
+`with-examples-1440.png`, `mobile-examples-390.png`
+
+The app claimed five countries. It actually routes to Warsaw, Prague,
+Budapest, Copenhagen, Brussels, Vienna, Milan, Zagreb, Ljubljana and London
+St Pancras, because a cross-border service carries its foreign stops with it.
+Copy corrected, and six example journeys added so a first-time visitor sees
+what the thing can do rather than facing an empty form.
+
+Verified in the browser at both widths: Paris→London returns four real
+Eurostar options with the Brussel-Zuid connection shown in the leg detail,
+and all five feed attributions render in the footer with the retrieval date.
+
+Fixed here: a bare "stops" label with no number when a place carried no count,
+and a service named after its whole corridor pushing its row off the card.
