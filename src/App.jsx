@@ -186,6 +186,9 @@ const EXAMPLES = [
   { label: 'Berlin → Warszawa',
     from: { name: 'Berlin', lat: 52.5118, lon: 13.3782 },
     to: { name: 'Warszawa', lat: 52.2288, lon: 21.0030 }, hour: 8 },
+  { label: 'Zurich → Hamburg, sleeper',
+    from: { name: 'Zürich', lat: 47.3779, lon: 8.5403 },
+    to: { name: 'Hamburg', lat: 53.5528, lon: 10.0067 }, hour: 19 },
 ];
 
 export default function App() {
