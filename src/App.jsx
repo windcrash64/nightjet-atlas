@@ -1,70 +1,25 @@
+/**
+ * THE CLOCK FACE
+ *
+ * A person types two places and needs to see, in about twenty seconds, which
+ * way to go and whether they can sleep through it.
+ *
+ * The results are one object, not eight rows: a single shared time ruler with
+ * the real computed sky behind it. That is what replaces price, because there
+ * is no price — open feeds carry schedules, not fares, and there is no code
+ * path here that invents one.
+ */
+
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Globe from './components/Globe.jsx';
+import JourneyRow from './components/JourneyRow.jsx';
 import { badgesFor, cadenceOf } from './lib/summarise.js';
+import { timeAxis, ribbonFor, sortsFor, positionOn } from './lib/ribbon.js';
+import { hhmm, dur, isoToday, isoToYmd, isoPlusDays, dayLabel } from './lib/format.js';
 
-/* ---------- formatting ---------- */
+/* ---------- place field ---------- */
 
-const MODE_LABEL = {
-  night_rail: 'Night train', rail: 'Train', coach: 'Coach',
-  ferry: 'Ferry', metro: 'Metro', tram: 'Tram', walk: 'Walk',
-};
-
-function hhmm(min) {
-  if (min == null) return '--:--';
-  const r = ((min % 1440) + 1440) % 1440;
-  return `${String(Math.floor(r / 60)).padStart(2, '0')}:${String(r % 60).padStart(2, '0')}`;
-}
-
-function dayOffset(min) {
-  return Math.floor(min / 1440);
-}
-
-/** Today as YYYY-MM-DD, for a native date input. Local, not UTC. */
-function isoToday() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-/** "2026-09-01" -> 20260901, the compact form the API takes. */
-function isoToYmd(iso) {
-  return Number(iso.replace(/-/g, '')) || 0;
-}
-
-/** YYYYMMDD plus n days, back as an ISO string for the input's max. */
-function isoPlusDays(ymd, n) {
-  const d = new Date(Date.UTC(Math.floor(ymd / 10000), (Math.floor(ymd / 100) % 100) - 1, ymd % 100));
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
-}
-
-/** "Today", "Tomorrow", or a short weekday-and-date. */
-function dayLabel(iso) {
-  const today = isoToday();
-  if (iso === today) return 'Today';
-  const t = new Date(`${today}T00:00:00`);
-  t.setDate(t.getDate() + 1);
-  if (iso === `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`) {
-    return 'Tomorrow';
-  }
-  // 'en-GB' rather than the browser's locale: the rest of the page is English,
-  // and a machine set to another language rendered this one label as
-  // "6 Eyl Paz" beside otherwise English copy. Day-before-month also matches
-  // how every country in the data writes a date.
-  return new Date(`${iso}T00:00:00`).toLocaleDateString('en-GB', {
-    weekday: 'short', day: 'numeric', month: 'short',
-  });
-}
-
-function dur(min) {
-  if (min == null) return 'unavailable';
-  const h = Math.floor(min / 60);
-  const m = min % 60;
-  return h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m`;
-}
-
-/* ---------- place search ---------- */
-
-function PlaceField({ id, label, value, place, onText, onPick, placeholder }) {
+function PlaceField({ id, label, value, onText, onPick, placeholder }) {
   const [open, setOpen] = useState(false);
   const [hits, setHits] = useState([]);
   const timer = useRef();
@@ -72,6 +27,8 @@ function PlaceField({ id, label, value, place, onText, onPick, placeholder }) {
   useEffect(() => {
     clearTimeout(timer.current);
     if (!open || value.trim().length < 2) { setHits([]); return; }
+    // /api/places is a synchronous in-memory scan and is NOT rate limited —
+    // only /api/search is. So debounced-per-keystroke is fine here.
     timer.current = setTimeout(async () => {
       try {
         const r = await fetch(`/api/places?q=${encodeURIComponent(value.trim())}`);
@@ -88,13 +45,12 @@ function PlaceField({ id, label, value, place, onText, onPick, placeholder }) {
       <input
         id={id} value={value} placeholder={placeholder} autoComplete="off"
         onChange={(e) => { onText(e.target.value); setOpen(true); }}
-        // Select the whole value on focus so typing REPLACES the current
-        // station. Without this, clicking into a field holding "Berlin Hbf"
-        // and typing "Madrid" leaves "MadridBerlin Hbf", which matches nothing.
+        // Select the whole value on focus so typing REPLACES the station.
+        // Without this, clicking into a field holding "Berlin Hbf" and typing
+        // "Madrid" leaves "MadridBerlin Hbf", which matches nothing.
         onFocus={(e) => { e.target.select(); setOpen(true); }}
         onBlur={() => setTimeout(() => setOpen(false), 160)}
       />
-      {place?.stops > 0 && !open && <span className="field-note">{place.stops} stops</span>}
       {open && hits.length > 0 && (
         <ul className="suggestions">
           {hits.map((p, i) => (
@@ -111,50 +67,7 @@ function PlaceField({ id, label, value, place, onText, onPick, placeholder }) {
   );
 }
 
-/* ---------- one option in the list ---------- */
-
-function Option({ journey, index, active, badge, onSelect }) {
-  const rides = journey.legs.filter((l) => l.mode !== 'walk');
-  const plus = dayOffset(journey.arriveMin) - dayOffset(journey.departMin);
-
-  return (
-    <button
-      type="button"
-      className={`option${active ? ' option--active' : ''}${journey.hasSleeper ? ' option--sleeper' : ''}`}
-      onClick={onSelect}
-      aria-pressed={active}
-    >
-      <span className="option-rank mono">{String(index + 1).padStart(2, '0')}</span>
-
-      <span className="option-body">
-        {badge && <span className="option-badge">{badge}</span>}
-        <span className="option-times mono">
-          {hhmm(journey.departMin)}
-          <span className="option-arrow">→</span>
-          {hhmm(journey.arriveMin)}
-          {plus > 0 && <sup className="option-plus">+{plus}</sup>}
-        </span>
-        <span className="option-chain">
-          {rides.map((l, i) => (
-            <span key={i} className={`chip chip--${l.mode}`}>{l.service || MODE_LABEL[l.mode]}</span>
-          ))}
-        </span>
-      </span>
-
-      <span className="option-right">
-        <span className="option-dur mono">{dur(journey.durationMin)}</span>
-        <span className="option-transfers">
-          {journey.transfers === 0 ? 'direct' : `${journey.transfers} change${journey.transfers > 1 ? 's' : ''}`}
-        </span>
-        {journey.hasSleeper && (
-          <span className="option-sleep">{dur(journey.sleeperMin)} asleep</span>
-        )}
-      </span>
-    </button>
-  );
-}
-
-/* ---------- detail for the selected option ---------- */
+/* ---------- the detail of one journey ---------- */
 
 function Detail({ journey }) {
   if (!journey) return null;
@@ -162,31 +75,27 @@ function Detail({ journey }) {
     <div className="detail">
       <ol className="legs">
         {journey.legs.map((l, i) => (
-          <li key={i} className={`leg leg--${l.mode}`}>
-            <div className="leg-time mono">
-              <span>{hhmm(l.departMin)}</span>
+          <li key={i} className={`leg-row leg-row--${l.mode}`}>
+            <span className="leg-time num">
+              {hhmm(l.departMin)}<br />
               <span className="leg-time-arr">{hhmm(l.arriveMin)}</span>
-            </div>
-            <div className="leg-main">
-              <p className="leg-head">
-                <span className="leg-service">{l.service || MODE_LABEL[l.mode]}</span>
-                {l.operator && <span className="leg-op"> · {l.operator}</span>}
-                {l.mode === 'night_rail' && <span className="leg-tag">sleeper</span>}
-              </p>
-              <p className="leg-stops">
+            </span>
+            <span className="leg-body">
+              <span className="leg-name">{l.service || (l.mode === 'walk' ? 'Walk' : 'Train')}</span>
+              {l.operator && <span className="leg-op"> · {l.operator}</span>}
+              {l.mode === 'night_rail' && <span className="leg-tag num">SLEEPER</span>}
+              <br />
+              <span className="leg-stops">
                 {l.from.name} → {l.to.name}
-                {l.intermediateStops > 0 && (
-                  <span className="leg-via"> · {l.intermediateStops} stops on the way</span>
-                )}
-              </p>
-            </div>
+                {/* intermediateStops is an INTEGER, not a list of positions.
+                    Drawing tick marks along the route would be fabricating
+                    coordinates the data does not contain. */}
+                {l.intermediateStops > 0 && <span className="leg-via"> · {l.intermediateStops} stops</span>}
+              </span>
+            </span>
           </li>
         ))}
       </ol>
-      <p className="no-fare">
-        No price shown. These are published timetables, not ticket inventory —
-        fares live with the operator, and we will not invent one.
-      </p>
     </div>
   );
 }
@@ -194,53 +103,23 @@ function Detail({ journey }) {
 /* ---------- app ---------- */
 
 const START = {
-  from: { name: 'Berlin Hbf', lat: 52.5118, lon: 13.3782, stops: 102 },
-  to: { name: 'München Hbf', lat: 48.1402, lon: 11.5600, stops: 60 },
+  from: { name: 'Frankfurt(Main)Hbf', lat: 50.1067, lon: 8.6628 },
+  to: { name: 'Wien Hbf', lat: 48.1856, lon: 16.3367 },
 };
-
-/**
- * Journeys worth showing someone who has just arrived. Each is real, verified
- * against the timetable, and demonstrates something the app does that a form
- * on its own does not advertise: a sleeper, a border crossing, a high-speed
- * line, the Eurostar.
- */
-const EXAMPLES = [
-  { label: 'Frankfurt → Vienna, overnight',
-    from: { name: 'Frankfurt', lat: 50.1067, lon: 8.6628 },
-    to: { name: 'Wien', lat: 48.1856, lon: 16.3367 }, hour: 16 },
-  { label: 'Paris → Marseille',
-    from: { name: 'Paris', lat: 48.8809, lon: 2.3549 },
-    to: { name: 'Marseille', lat: 43.3025, lon: 5.3803 }, hour: 8 },
-  { label: 'Frankfurt → Berlin',
-    from: { name: 'Frankfurt', lat: 50.1067, lon: 8.6628 },
-    to: { name: 'Berlin', lat: 52.5118, lon: 13.3782 }, hour: 8 },
-  { label: 'Madrid → Barcelona',
-    from: { name: 'Madrid', lat: 40.4064, lon: -3.6909 },
-    to: { name: 'Barcelona', lat: 41.3790, lon: 2.1400 }, hour: 8 },
-  { label: 'Paris → London',
-    from: { name: 'Paris', lat: 48.8809, lon: 2.3549 },
-    to: { name: 'London', lat: 51.5308, lon: -0.1238 }, hour: 8 },
-  { label: 'Berlin → Warszawa',
-    from: { name: 'Berlin', lat: 52.5118, lon: 13.3782 },
-    to: { name: 'Warszawa', lat: 52.2288, lon: 21.0030 }, hour: 8 },
-  { label: 'Hamburg → Zürich',
-    from: { name: 'Hamburg', lat: 53.5528, lon: 10.0067 },
-    to: { name: 'Zürich', lat: 47.3779, lon: 8.5403 }, hour: 8 },
-];
 
 export default function App() {
   const [fromText, setFromText] = useState(START.from.name);
   const [toText, setToText] = useState(START.to.name);
   const [from, setFrom] = useState(START.from);
   const [to, setTo] = useState(START.to);
-  const [departHour, setDepartHour] = useState(8);
-  // An ISO date for the input, defaulting to today. The trains that run vary
-  // by the day — only about a quarter of the network operates on any given
-  // date — so this is not a refinement, it is what makes the answer true.
+  const [departHour, setDepartHour] = useState(16);
   const [date, setDate] = useState(() => isoToday());
   const [state, setState] = useState({ status: 'idle', journeys: [] });
   const [selected, setSelected] = useState(0);
+  const [hovered, setHovered] = useState(-1);
+  const [sort, setSort] = useState('earliest');
   const [reduced, setReduced] = useState(false);
+  const inflight = useRef(null);
 
   useEffect(() => {
     const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -250,7 +129,14 @@ export default function App() {
   }, []);
 
   const run = useCallback(async (o = from, d = to, h = departHour, when = date) => {
-    setState({ status: 'loading', journeys: [] });
+    // Never more than one search in flight. The server answers 503 at four
+    // concurrent and 429 above twenty a minute, and a stale response landing
+    // after a newer one would show the wrong answer for the current inputs.
+    inflight.current?.abort();
+    const ctl = new AbortController();
+    inflight.current = ctl;
+
+    setState((s) => ({ ...s, status: 'loading' }));
     setSelected(0);
     try {
       const r = await fetch('/api/search', {
@@ -260,49 +146,100 @@ export default function App() {
           from: { lat: o.lat, lon: o.lon }, to: { lat: d.lat, lon: d.lon },
           departHour: h, date: isoToYmd(when),
         }),
+        signal: ctl.signal,
       });
-      const data = await r.json();
-      if (!r.ok) { setState({ status: 'error', message: data.error, journeys: [] }); return; }
+      const data = await r.json().catch(() => ({}));
+      if (ctl.signal.aborted) return;
+
+      // 429 and 503 are distinct, recoverable states — not "the server is
+      // down". Collapsing them into one message is how a rate limit looks
+      // like an outage.
+      if (r.status === 429) {
+        setState({ status: 'error', kind: 'rate', message: 'That is a lot of searches in a minute. Give it a moment.', journeys: [] });
+        return;
+      }
+      if (r.status === 503) {
+        setState({ status: 'error', kind: 'busy', message: 'Busy right now. Try that again.', journeys: [] });
+        return;
+      }
+      if (!r.ok) {
+        setState({ status: 'error', message: data.error ?? 'That search could not be run.', journeys: [] });
+        return;
+      }
       setState({
         status: 'done', journeys: data.journeys ?? [],
         coverage: data.coverage, sources: data.sources,
-        generatedAt: data.generatedAt, tookMs: data.tookMs,
-        calendar: data.calendar,
+        generatedAt: data.generatedAt, date: data.date, calendar: data.calendar,
       });
-    } catch {
+    } catch (e) {
+      if (e.name === 'AbortError') return;
       setState({ status: 'error', message: 'The search service is not responding.', journeys: [] });
     }
   }, [from, to, departHour, date]);
 
   useEffect(() => { run(); /* eslint-disable-next-line */ }, []);
 
-  // Both rules live in lib/summarise.js, where their edge cases are tested.
-  const badges = useMemo(() => badgesFor(state.journeys), [state.journeys]);
-  const cadence = useMemo(() => cadenceOf(state.journeys), [state.journeys]);
+  const journeys = state.journeys ?? [];
 
-  const active = state.journeys[selected] ?? null;
+  // Every ribbon is measured against ONE axis, so a 4h option is physically
+  // shorter than a 15h one. Per-row normalising would make them the same
+  // length and destroy the only comparison this list exists to make.
+  const axis = useMemo(() => timeAxis(journeys), [journeys]);
+  const ymd = state.date ?? isoToYmd(date);
+  const ribbons = useMemo(
+    () => journeys.map((j) => ribbonFor(j, axis, ymd)),
+    [journeys, axis, ymd],
+  );
+
+  const sorts = useMemo(() => sortsFor(journeys), [journeys]);
+  const order = useMemo(() => {
+    const cmp = sorts.find((s) => s.key === sort)?.cmp;
+    const idx = journeys.map((_, i) => i);
+    return cmp ? idx.sort((a, b) => cmp(journeys[a], journeys[b])) : idx;
+  }, [journeys, sorts, sort]);
+
+  const badges = useMemo(() => badgesFor(journeys), [journeys]);
+  const cadence = useMemo(() => cadenceOf(journeys), [journeys]);
+  const active = journeys[selected] ?? null;
+
+  // Hour ticks across the shared axis. Three at 360px, six above it — a ruler
+  // nobody can read is decoration.
+  const ticks = useMemo(() => {
+    const out = [];
+    const startHour = Math.ceil(axis.startMin / 360) * 360;
+    for (let m = startHour; m <= axis.endMin; m += 360) {
+      out.push({ min: m, at: positionOn(axis, m), midnight: ((m % 1440) + 1440) % 1440 === 0 });
+    }
+    return out;
+  }, [axis]);
 
   return (
     <div className="app">
       <header className="masthead">
-        <h1>How do I actually get<br /><em>from here to there?</em></h1>
-        <p>
-          Real timetables, drawn on the world and ranked by what matters — time,
-          changes, and whether you can sleep through it. Built from five
-          countries&rsquo; open data, and reaching wherever their trains run —
-          as far as Warsaw, Copenhagen, Budapest and London.
+        <h1>Where next</h1>
+        <p className="masthead-stats num">
+          189,209 STOPS · 384,515 SERVICES · 6 FEEDS
         </p>
       </header>
 
       <form className="search" onSubmit={(e) => { e.preventDefault(); run(); }}>
         <PlaceField
-          id="from" label="From" value={fromText} place={from}
-          placeholder="Any station or city"
+          id="from" label="From" value={fromText}
+          placeholder="Where you are"
           onText={setFromText}
           onPick={(p) => { setFrom(p); setFromText(p.name); run(p, to, departHour, date); }}
         />
+        <button
+          type="button" className="swap" aria-label="Swap origin and destination"
+          onClick={() => {
+            const [nf, nt] = [to, from];
+            const [nft, ntt] = [toText, fromText];
+            setFrom(nf); setTo(nt); setFromText(nft); setToText(ntt);
+            run(nf, nt, departHour, date);
+          }}
+        >⇄</button>
         <PlaceField
-          id="to" label="To" value={toText} place={to}
+          id="to" label="To" value={toText}
           placeholder="Where you're going"
           onText={setToText}
           onPick={(p) => { setTo(p); setToText(p.name); run(from, p, departHour, date); }}
@@ -312,10 +249,9 @@ export default function App() {
           <input
             id="when" type="date" value={date}
             min={isoToday()}
-            // Bounded by the calendars we actually ingested. Beyond the
-            // horizon the server stops filtering by day, so the answer would
-            // quietly go back to "every train, any day" — better to not offer
-            // the date at all than to answer it wrongly.
+            // Bounded by the calendars actually ingested: past the horizon the
+            // server stops filtering by day, so the answer would quietly go
+            // back to "every train, any day" while still looking precise.
             max={state.calendar?.from
               ? isoPlusDays(state.calendar.from, (state.calendar.days ?? 1) - 1)
               : undefined}
@@ -327,7 +263,7 @@ export default function App() {
           <span className="field-note">{dayLabel(date)}</span>
         </div>
         <div className="field field--time">
-          <label htmlFor="depart">Leave after</label>
+          <label htmlFor="depart">After</label>
           <select id="depart" value={departHour}
                   onChange={(e) => { const h = Number(e.target.value); setDepartHour(h); run(from, to, h, date); }}>
             {Array.from({ length: 24 }, (_, h) => (
@@ -335,76 +271,40 @@ export default function App() {
             ))}
           </select>
         </div>
-        <button className="go" type="submit" disabled={state.status === 'loading'}>
-          {state.status === 'loading' ? 'Searching…' : 'Find the ways'}
-        </button>
       </form>
 
-      <nav className="examples" aria-label="Example journeys">
-        {EXAMPLES.map((ex) => (
-          <button
-            key={ex.label}
-            type="button"
-            onClick={() => {
-              setFrom(ex.from); setTo(ex.to); setDepartHour(ex.hour);
-              setFromText(ex.from.name); setToText(ex.to.name);
-              run(ex.from, ex.to, ex.hour, date);
-            }}
-          >
-            {ex.label}
-          </button>
-        ))}
-      </nav>
-
       <div className="workspace">
-        <div className="map-pane">
-          <Globe journeys={state.journeys} activeIndex={selected} reduced={reduced} />
-          {active && (
-            <div className="map-caption">
-              <strong>{active.legs[0].from.name}</strong> → <strong>{active.legs[active.legs.length - 1].to.name}</strong>
-            </div>
+        <main className="answer">
+          {state.status === 'loading' && !journeys.length && (
+            <p className="notice">Reading the timetables…</p>
           )}
-        </div>
-
-        <div className="list-pane">
-          {state.status === 'loading' && <p className="notice">Reading the timetables…</p>}
 
           {state.status === 'error' && (
-            <p className="notice notice--error">{state.message}</p>
+            <p className={`notice notice--${state.kind ?? 'error'}`}>{state.message}</p>
           )}
 
-          {state.status === 'done' && !state.journeys.length && (
-            // Two different failures used to read as one. `coverage` means we
-            // have no station near that place at all; without it, the places
-            // are known and it is this DAY and hour that has nothing — which
-            // is a normal answer now that only about a quarter of the network
-            // runs on any given date. Saying "we don't go there" to someone
-            // who picked a quiet Tuesday evening is simply untrue.
+          {state.status === 'done' && !journeys.length && (
             <div className="notice">
               {state.coverage ? (
                 <p>
                   {state.coverage} We carry the published timetables of Germany,
                   France, Spain, Switzerland and the Netherlands, which reach
                   their neighbours wherever a train crosses the border.
-                  Somewhere further afield will not be here yet.
                 </p>
               ) : (
                 <>
                   <p>
-                    {/* "on today" reads wrong; "today" and "tomorrow" are
-                        adverbs, a weekday needs the preposition. */}
                     Nothing runs this way {dayLabel(date) === 'Today' || dayLabel(date) === 'Tomorrow'
                       ? dayLabel(date).toLowerCase()
                       : `on ${dayLabel(date)}`} after {String(departHour).padStart(2, '0')}:00.
-                    {' '}The trains that run vary by the day, so another date or an
-                    earlier start often has one.
+                    {' '}Only about a quarter of the network runs on any given day.
                   </p>
                   <p className="notice-actions">
-                    <button type="button" onClick={() => {
+                    <button type="button" className="chip" onClick={() => {
                       const h = Math.max(0, departHour - 4);
                       setDepartHour(h); run(from, to, h, date);
                     }}>Leave earlier</button>
-                    <button type="button" onClick={() => {
+                    <button type="button" className="chip" onClick={() => {
                       const next = isoPlusDays(isoToYmd(date), 1);
                       setDate(next); run(from, to, departHour, next);
                     }}>Try the next day</button>
@@ -414,46 +314,80 @@ export default function App() {
             </div>
           )}
 
-          {state.status === 'done' && state.journeys.length > 0 && (
+          {journeys.length > 0 && (
             <>
-              <h2 className="list-head">
-                {state.journeys.length} way{state.journeys.length > 1 ? 's' : ''} to get there
-                <span className="list-took mono">{state.tookMs}ms</span>
-              </h2>
-              {cadence && (
-                <p className="list-note">
-                  <strong>{cadence.spine}</strong> runs this route {cadence.every}
-                  {cadence.count < cadence.total
-                    ? ` — ${cadence.count} of these ${cadence.total} options are that train`
-                    : ''}
-                  . The choice here is mostly when you leave.
-                </p>
-              )}
-              <div className="options">
-                {state.journeys.map((j, i) => (
-                  <Option key={i} journey={j} index={i} active={i === selected}
-                          badge={badges[i]} onSelect={() => setSelected(i)} />
+              <div className="sortbar">
+                {sorts.map((s) => (
+                  <button
+                    key={s.key} type="button" className="chip"
+                    aria-pressed={sort === s.key}
+                    onClick={() => setSort(s.key)}
+                  >{s.label}</button>
                 ))}
               </div>
+
+              {/* Said once, above the list. A null repeated on every row reads
+                  as a gap; stated once it reads as a position. */}
+              <p className="no-fare">
+                No fares. Open timetables carry schedules, not prices.
+              </p>
+
+              {cadence && (
+                <p className="cadence">
+                  <strong>{cadence.spine}</strong> runs this route {cadence.every}
+                  {cadence.count < cadence.total
+                    ? ` — ${cadence.count} of these ${cadence.total} are that train`
+                    : ''}.
+                </p>
+              )}
+
+              <div className="axis num" aria-hidden="true">
+                {ticks.map((t, i) => (
+                  <span
+                    key={i}
+                    className={`tick${t.midnight ? ' tick--midnight' : ''}`}
+                    style={{ left: `${(t.at * 100).toFixed(3)}%` }}
+                  >{hhmm(t.min)}</span>
+                ))}
+              </div>
+
+              <div className="rows">
+                {order.map((i) => (
+                  <JourneyRow
+                    key={i}
+                    journey={journeys[i]}
+                    ribbon={ribbons[i]}
+                    badge={badges[i]}
+                    active={i === selected}
+                    onSelect={() => setSelected(i)}
+                    onHover={(on) => setHovered(on ? i : -1)}
+                  />
+                ))}
+              </div>
+
               <Detail journey={active} />
             </>
           )}
-        </div>
+        </main>
+
+        <aside className="globe-pane">
+          <Globe
+            journeys={journeys}
+            activeIndex={hovered >= 0 ? hovered : selected}
+            reduced={reduced}
+          />
+        </aside>
       </div>
 
       <footer>
         <p>
           {/* Feeds from one publisher share an attribution string; printing it
-              once per feed reads as a bug, not as diligence. */}
+              once per feed would repeat it. EU Delegated Regulation 2017/1926
+              Art. 8(3) requires the source AND the last-update time. */}
           {[...new Set((state.sources ?? []).map((s) => s.attribution))].join(' · ')}
-          {state.generatedAt && (
-            <> · Timetable data retrieved {new Date(state.generatedAt).toISOString().slice(0, 10)}</>
-          )}
+          {state.generatedAt && ` · Timetable data retrieved ${state.generatedAt.slice(0, 10)}`}
         </p>
-        <p>
-          Schedules are not tickets. Confirm times and buy with the operator before
-          you travel. Country geometry: Natural Earth (public domain).
-        </p>
+        <p>Schedules are not tickets. Confirm times and buy with the operator.</p>
       </footer>
     </div>
   );

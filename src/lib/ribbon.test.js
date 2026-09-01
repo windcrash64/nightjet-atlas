@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   timeAxis, positionOn, instantFor, skyBands, ribbonFor, sortsFor,
 } from './ribbon.js';
@@ -273,4 +274,20 @@ test('a null coordinate produces no sky rather than a black ribbon', () => {
   const r = ribbonFor(withNullStart, timeAxis([withNullStart]), 20260915);
   assert.equal(r.dark, 0, 'unknown position must read as no sky, not as night');
   assert.deepEqual(r.bands, []);
+});
+
+/* ---------- the band names the stylesheet must match ---------- */
+
+test('every band sun.js can emit is painted by the stylesheet', () => {
+  // A CSS class that does not match what the code emits does not throw. The
+  // band renders unstyled, falls through to the ribbon background, and the
+  // picture is quietly wrong: `.band--astro` against an emitted
+  // "astronomical" painted astronomical twilight as full daylight. This test
+  // reads the stylesheet so the two cannot drift apart again.
+  const css = readFileSync('src/styles.css', 'utf8');
+  // The five bands twilightBand() can return, from sun.js.
+  for (const band of ['day', 'civil', 'nautical', 'astronomical', 'night']) {
+    assert.ok(css.includes(`.band--${band}`),
+      `styles.css has no rule for .band--${band}, so it would render unstyled`);
+  }
 });
