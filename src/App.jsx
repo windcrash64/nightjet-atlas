@@ -57,7 +57,7 @@ function PlaceField({ id, label, value, place, onText, onPick, placeholder }) {
         onFocus={(e) => { e.target.select(); setOpen(true); }}
         onBlur={() => setTimeout(() => setOpen(false), 160)}
       />
-      {place && !open && <span className="field-note">{place.stops} stops</span>}
+      {place?.stops > 0 && !open && <span className="field-note">{place.stops} stops</span>}
       {open && hits.length > 0 && (
         <ul className="suggestions">
           {hits.map((p, i) => (
@@ -161,6 +161,33 @@ const START = {
   to: { name: 'München Hbf', lat: 48.1402, lon: 11.5600, stops: 60 },
 };
 
+/**
+ * Journeys worth showing someone who has just arrived. Each is real, verified
+ * against the timetable, and demonstrates something the app does that a form
+ * on its own does not advertise: a sleeper, a border crossing, a high-speed
+ * line, the Eurostar.
+ */
+const EXAMPLES = [
+  { label: 'Frankfurt → Vienna, overnight',
+    from: { name: 'Frankfurt', lat: 50.1067, lon: 8.6628 },
+    to: { name: 'Wien', lat: 48.1856, lon: 16.3367 }, hour: 16 },
+  { label: 'Paris → Marseille',
+    from: { name: 'Paris', lat: 48.8809, lon: 2.3549 },
+    to: { name: 'Marseille', lat: 43.3025, lon: 5.3803 }, hour: 8 },
+  { label: 'Zurich → Milano',
+    from: { name: 'Zürich', lat: 47.3779, lon: 8.5403 },
+    to: { name: 'Milano', lat: 45.4863, lon: 9.2043 }, hour: 8 },
+  { label: 'Madrid → Barcelona',
+    from: { name: 'Madrid', lat: 40.4064, lon: -3.6909 },
+    to: { name: 'Barcelona', lat: 41.3790, lon: 2.1400 }, hour: 8 },
+  { label: 'Paris → London',
+    from: { name: 'Paris', lat: 48.8809, lon: 2.3549 },
+    to: { name: 'London', lat: 51.5308, lon: -0.1238 }, hour: 8 },
+  { label: 'Berlin → Warszawa',
+    from: { name: 'Berlin', lat: 52.5118, lon: 13.3782 },
+    to: { name: 'Warszawa', lat: 52.2288, lon: 21.0030 }, hour: 8 },
+];
+
 export default function App() {
   const [fromText, setFromText] = useState(START.from.name);
   const [toText, setToText] = useState(START.to.name);
@@ -238,8 +265,9 @@ export default function App() {
         <h1>How do I actually get<br /><em>from here to there?</em></h1>
         <p>
           Real timetables, drawn on the world and ranked by what matters — time,
-          changes, and whether you can sleep through it. Germany, France, Spain, Switzerland
-          and the Netherlands today, from the operators&rsquo; own open data.
+          changes, and whether you can sleep through it. Built from five
+          countries&rsquo; open data, and reaching wherever their trains run —
+          as far as Warsaw, Copenhagen, Budapest and London.
         </p>
       </header>
 
@@ -270,6 +298,22 @@ export default function App() {
         </button>
       </form>
 
+      <nav className="examples" aria-label="Example journeys">
+        {EXAMPLES.map((ex) => (
+          <button
+            key={ex.label}
+            type="button"
+            onClick={() => {
+              setFrom(ex.from); setTo(ex.to); setDepartHour(ex.hour);
+              setFromText(ex.from.name); setToText(ex.to.name);
+              run(ex.from, ex.to, ex.hour);
+            }}
+          >
+            {ex.label}
+          </button>
+        ))}
+      </nav>
+
       <div className="workspace">
         <div className="map-pane">
           <Globe journeys={state.journeys} activeIndex={selected} reduced={reduced} />
@@ -290,9 +334,9 @@ export default function App() {
           {state.status === 'done' && !state.journeys.length && (
             <p className="notice">
               {state.coverage ?? 'No journey found between those places on this data.'}
-              {' '}We currently carry the timetables of Germany, France, Spain,
-              Switzerland and the Netherlands, and the long-distance services that run between them
-              and their neighbours.
+              {' '}We carry the published timetables of Germany, France, Spain, Switzerland
+              and the Netherlands, which reach their neighbours wherever a train
+              crosses the border. Somewhere further afield will not be here yet.
             </p>
           )}
 

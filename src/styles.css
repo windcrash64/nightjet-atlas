@@ -112,6 +112,21 @@ button.go {
 @media (hover: hover) { button.go:hover { transform: translateY(-1px); } }
 button.go:disabled { opacity: 0.45; cursor: progress; transform: none; }
 
+/* ---- example journeys ---- */
+
+.examples {
+  display: flex; flex-wrap: wrap; gap: var(--s2);
+  margin: calc(var(--s6) * -1 + var(--s2)) 0 var(--s6);
+}
+.examples button {
+  background: none; border: 1px solid var(--line); color: var(--text-dim);
+  font: inherit; font-size: 0.82rem; padding: 5px 11px; border-radius: 2px;
+  cursor: pointer; transition: color 140ms var(--editorial), border-color 140ms var(--editorial);
+}
+@media (hover: hover) {
+  .examples button:hover { color: var(--text); border-color: var(--text-faint); }
+}
+
 /* ---- workspace: map beside list ---- */
 
 .workspace {
@@ -191,6 +206,9 @@ button.go:disabled { opacity: 0.45; cursor: progress; transform: none; }
   font-size: 0.68rem; font-family: 'Overpass Mono', monospace;
   padding: 1px 6px; border: 1px solid var(--line); color: var(--text-dim);
   white-space: nowrap;
+  /* Some feeds name a service after its whole corridor — "Oberhausen Hbf
+     to Wien Hbf NJ40400" — which pushes the row off the card. */
+  max-width: 24ch; overflow: hidden; text-overflow: ellipsis;
 }
 .chip--night_rail { color: var(--sleep); border-color: #6b5a30; }
 .chip--rail { color: var(--rail); border-color: #35566b; }
