@@ -234,3 +234,31 @@ test('Copenhagen is findable by the names people type', { skip: !available }, as
       `"${q}" must resolve to the Danish stops, got: ${hits.map((h) => h.name).join(', ')}`);
   }
 });
+
+test('the globe and the text field agree on every city', { skip: !available }, async () => {
+  // The two ways to set a place must converge on the same city. They can
+  // silently disagree, and the globe is the one that is right: a marker
+  // renders from coordinates while the text field depends on spelling.
+  //
+  // Measured before diacritic folding, THREE reachable cities were markers you
+  // could click but names you could not type — Kraków, Poznań and Wrocław,
+  // which the German feed writes as "Krakow Glowny", "Poznan Glowny" and
+  // "Wroclaw Glowny". Copenhagen was a fourth. Every one of them looked like
+  // missing coverage when only the spelling was missing.
+  const { readFileSync, existsSync } = await import('node:fs');
+  if (!existsSync('src/data/cities.json')) return;   // built by build-cities.mjs
+
+  const { buildPlaceIndex, searchPlaces } = await import('./places.js');
+  const net = JSON.parse(readFileSync(NETWORK, 'utf8'));
+  const idx = index ?? buildIndex(net);
+  const places = buildPlaceIndex(net, idx);
+
+  const cities = JSON.parse(readFileSync('src/data/cities.json', 'utf8')).cities;
+  const unfindable = cities
+    .filter((c) => c.services > 0)
+    .filter((c) => searchPlaces(places, c.name).length === 0)
+    .map((c) => `${c.name} (${c.services} services)`);
+
+  assert.deepEqual(unfindable, [],
+    `these cities are reachable on the globe but cannot be typed: ${unfindable.join(', ')}`);
+});

@@ -176,25 +176,54 @@ export function buildPlaceIndex(network, index, { minStationScore = 3 } = {}) {
   return [...cities.values(), ...stations.values()];
 }
 
+/**
+ * Fold accents so a name matches however it is written.
+ *
+ * Feeds transliterate inconsistently and a traveller types the real name.
+ * Measured against the globe's own city list, THREE reachable cities were
+ * unfindable by their correct spelling because the German feed strips
+ * diacritics: Kraków is "Krakow Glowny", Poznań is "Poznan Glowny", Wrocław is
+ * "Wroclaw Glowny". Copenhagen was a fourth, needing an alias because "ø"
+ * becomes "oe" rather than "o" — a substitution NFD cannot do, which is why
+ * CITY_ALIASES still exists alongside this.
+ *
+ * Folding both sides fixes the whole class rather than three more entries in a
+ * hand-written table, and it keeps working as feeds change.
+ */
+const ATOMIC_LETTERS = { 'ł': 'l', 'ø': 'o', 'ß': 'ss', 'đ': 'd', 'æ': 'ae', 'œ': 'oe', 'þ': 'th', 'ð': 'd' };
+
+export function fold(s) {
+  return String(s ?? '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    // NFD only splits a base letter from a combining accent. Some letters are
+    // atomic and survive it untouched, which is why folding alone fixed Kraków
+    // and Poznań but NOT Wrocław: ł is its own letter, not l plus a stroke.
+    // Same for ø, ß, đ and æ.
+    .replace(/[łøßđæœþð]/g, (c) => ATOMIC_LETTERS[c] ?? c);
+}
+
 /** Ranked matches for a typed query. */
 export function searchPlaces(placeIndex, rawQuery, limit = 8) {
-  const raw = String(rawQuery ?? '').trim().toLowerCase();
+  const raw = fold(String(rawQuery ?? '').trim());
   if (raw.length < 2) return [];
   // Belt and braces over the null prototype above: whatever the lookup yields,
   // only a string may reach the string methods below.
   const alias = CITY_ALIASES[raw];
-  const q = typeof alias === 'string' ? alias : raw;
+  const q = fold(typeof alias === 'string' ? alias : raw);
 
   const scored = [];
   for (const p of placeIndex) {
-    const name = p.name.toLowerCase();
+    const name = fold(p.name);
     let score;
-    if (p.key === q || name === q) score = 0;
+    const key = fold(p.key);
+    if (key === q || name === q) score = 0;
     else if (name.startsWith(q)) score = 1;
     // A city key is only its FIRST word, so a two-word query like "den haag"
     // must match on the full name. Matching the key alone would return every
     // German village beginning "Den" for a search for The Hague.
-    else if (!q.includes(' ') && p.key.startsWith(q)) score = 2;
+    else if (!q.includes(' ') && key.startsWith(q)) score = 2;
     else if (name.includes(` ${q}`)) score = 3;
     else continue;                    // no prefix match: not a hit at all
     // A city outranks any one of its own stations at equal match quality.
