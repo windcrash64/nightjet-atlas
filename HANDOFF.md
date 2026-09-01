@@ -31,9 +31,13 @@ node scripts/bench.mjs  # cold search latency per corridor
 
 **Working, verified against real timetables:**
 
-- 189,209 stops and 384,515 services across Germany, France, Spain,
-  Switzerland and the Netherlands, ingested from six commercially-licensed
-  feeds (see `data/sources/registry.json`).
+- 189,209 stops and 384,515 services from six commercially-licensed feeds
+  covering Germany, France, Spain, Switzerland and the Netherlands (see
+  ).
+- **Reach is wider than the ingested countries**, because a cross-border
+  service carries its foreign stops with it. Verified routing to Warsaw,
+  Prague, Budapest, Copenhagen, Brussels, Vienna, Milan, Zagreb, Ljubljana and
+  London St Pancras.
 - RAPTOR-style routing over patterns rather than trips. Median cold search
   **716ms**, worst 841ms, measured by `scripts/bench.mjs`.
 - Real 3D globe (Natural Earth vector geometry, no map tiles, no keys), framed
@@ -41,7 +45,9 @@ node scripts/bench.mjs  # cold search latency per corridor
 - Spot-checked against reality: Madrid–Barcelona 197min on AVE (real ~2h30),
   Paris–Marseille 184min TGV (real ~3h), Zurich–Milan 197min direct EC (real
   ~3h20), Zurich–Geneva 170min IC1, Amsterdam–Rotterdam 43min,
-  Berlin–Munich 247min ICE 29, Amsterdam–Berlin 371min.
+  Berlin–Munich 247min ICE 29, Amsterdam–Berlin 371min, Paris–Brussels 82min
+  Eurostar (real ~1h22), Paris–London 217min, Berlin–Prague 250min (~4h),
+  Berlin–Warszawa 330min, Vienna–Budapest 275min RJX.
 - 50 tests: 14 on the router, 13 on place search, 12 against the real ingested
   network, plus journey normalisation. Every place-search test names a bug that
   actually shipped.
