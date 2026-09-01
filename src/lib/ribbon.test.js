@@ -61,16 +61,37 @@ test('positions run 0 to 1 across the axis', () => {
 /* ---------- local time to a real instant ---------- */
 
 test('a departure minute becomes the right UTC instant', () => {
-  // 2026-09-01 08:00 in CEST (UTC+2) is 06:00 UTC.
-  const ms = instantFor(20260901, 8 * 60, 2);
-  assert.equal(new Date(ms).toISOString(), '2026-09-01T06:00:00.000Z');
+  // 2026-09-01 08:00 in CEST (UTC+2) is 06:00 UTC. The offset is derived from
+  // the date, not passed — see the DST test below for why.
+  assert.equal(new Date(instantFor(20260901, 8 * 60)).toISOString(),
+    '2026-09-01T06:00:00.000Z');
 });
 
 test('a time past midnight lands on the next day', () => {
   // GTFS runs past 24:00 for overnight services: 1860 is 07:00 the NEXT day,
   // and getting this wrong would draw a sleeper's dawn on the wrong date.
-  const ms = instantFor(20260901, 1860, 2);
-  assert.equal(new Date(ms).toISOString(), '2026-09-02T05:00:00.000Z');
+  assert.equal(new Date(instantFor(20260901, 1860)).toISOString(),
+    '2026-09-02T05:00:00.000Z');
+});
+
+test('the offset override is in MINUTES, not hours', () => {
+  // This test exists because the parameter changed units. Passing 2 meaning
+  // "+2 hours" silently produced a 118-minute error — the value is accepted,
+  // nothing throws, and the sky lands two hours off. Pin the unit.
+  assert.equal(new Date(instantFor(20260901, 8 * 60, 120)).toISOString(),
+    '2026-09-01T06:00:00.000Z', '120 minutes is +2h');
+  assert.equal(new Date(instantFor(20260901, 8 * 60, 60)).toISOString(),
+    '2026-09-01T07:00:00.000Z', '60 minutes is +1h');
+});
+
+test('the CET/CEST boundary is computed, because it falls inside the horizon', () => {
+  // The 60-day horizon opening 2026-09-01 closes 2026-10-30, and CEST ends at
+  // 01:00 UTC on Sunday 2026-10-25. A hardcoded +2 would put the sky an hour
+  // wrong for the last five bookable days of the window.
+  assert.equal(new Date(instantFor(20261020, 12 * 60)).toISOString(),
+    '2026-10-20T10:00:00.000Z', 'before the change: CEST, UTC+2');
+  assert.equal(new Date(instantFor(20261027, 12 * 60)).toISOString(),
+    '2026-10-27T11:00:00.000Z', 'after the change: CET, UTC+1');
 });
 
 /* ---------- the sky ---------- */

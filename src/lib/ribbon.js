@@ -74,23 +74,40 @@ export function positionOn(axis, min) {
 }
 
 /**
+ * Central European summer time runs from 01:00 UTC on the last Sunday of March
+ * to 01:00 UTC on the last Sunday of October. Computed, never hardcoded,
+ * because the switch falls INSIDE the 60-day booking horizon: with the horizon
+ * opening 2026-09-01 it closes 2026-10-30, and CEST ends 2026-10-25. A fixed
+ * +2 would put the sky an hour wrong for the last five bookable days.
+ */
+function cetOffsetMinutes(utcMs) {
+  const yr = new Date(utcMs).getUTCFullYear();
+  const lastSunday = (month) => {
+    const endOfMonth = new Date(Date.UTC(yr, month + 1, 0));
+    return Date.UTC(yr, month, endOfMonth.getUTCDate() - endOfMonth.getUTCDay(), 1);
+  };
+  return utcMs >= lastSunday(2) && utcMs < lastSunday(9) ? 120 : 60;
+}
+
+/**
  * The UTC instant a local departure minute corresponds to.
  *
- * GTFS times are agency-local with no zone attached, and every country
- * ingested is on CET/CEST — so a fixed offset is right for today's coverage
- * and wrong the moment a feed outside that band is added. It is deliberately
- * a parameter rather than a constant so the caller must think about it, and
- * `src/lib/calendar.js` already fails loudly if a feed from another offset
- * appears. An hour of error at a 6-degree twilight boundary moves a band edge
- * by minutes, which is far below what a reader can see.
+ * GTFS times are agency-local with no zone attached, and every ingested feed
+ * is on one clock — `scripts/ingest.mjs` hard-fails if two offsets appear — so
+ * deriving the offset from the date is correct today, and the failure is loud
+ * rather than silent if coverage ever leaves that band.
+ *
+ * Getting this wrong is not cosmetic. Feeding local minutes to the sun as if
+ * they were UTC measured a real 06:00 dawn departure at dark 0.000, flat
+ * midday, when the truth is 0.196 with a nautical-to-civil-to-day sunrise.
  */
-export function instantFor(dateYmd, minutesPastMidnight, utcOffsetHours = 2) {
+export function instantFor(dateYmd, minutesPastMidnight, offsetMinutes) {
   const y = Math.floor(dateYmd / 10000);
   const m = (Math.floor(dateYmd / 100) % 100) - 1;
   const d = dateYmd % 100;
-  return Date.UTC(y, m, d, 0, 0, 0)
-    - utcOffsetHours * 3600e3
-    + minutesPastMidnight * 60e3;
+  const base = Date.UTC(y, m, d, 0, 0, 0);
+  const off = offsetMinutes ?? cetOffsetMinutes(base);
+  return base + minutesPastMidnight * 60e3 - off * 60e3;
 }
 
 /**
@@ -126,13 +143,13 @@ export function skyBands(sky) {
  * up and a direct one is a single unbroken bar, without anyone reading the
  * transfer count.
  */
-export function ribbonFor(journey, axis, dateYmd, utcOffsetHours = 2) {
+export function ribbonFor(journey, axis, dateYmd) {
   const rides = journey.legs.filter((l) => l.mode !== 'walk');
   const first = rides[0] ?? journey.legs[0];
   const last = rides[rides.length - 1] ?? journey.legs[journey.legs.length - 1];
 
-  const startMs = instantFor(dateYmd, journey.departMin, utcOffsetHours);
-  const endMs = instantFor(dateYmd, journey.arriveMin, utcOffsetHours);
+  const startMs = instantFor(dateYmd, journey.departMin);
+  const endMs = instantFor(dateYmd, journey.arriveMin);
 
   // Coordinates must be real numbers, not merely present. router.js builds the
   // walk to the first station as `{ name: 'Start', lat: null, lon: null }`
