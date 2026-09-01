@@ -68,6 +68,19 @@ beside the feed rather than in a document nobody re-reads.
 
 Recorded so the reasoning is not lost and nobody re-litigates it.
 
+**Read the status, not just the exclusion.** These are not one category. A feed
+left out because its licence page would not load is in a completely different
+position from one whose publisher forbids reuse, and the registry now says
+which is which (`status` on every entry in `_deliberatelyExcluded`):
+
+| Status | Means |
+|---|---|
+| `unconfirmed` | **No licence text could be retrieved.** An availability gap, *not* a legal finding. Belgium, Denmark and Sweden are here: the feeds work and nobody has refused anything. Do not read this as "checked and refused" and retire them. |
+| `claimed` | A third party asserts a licence the publisher does not grant. Not a licence. |
+| `prohibited` | The publisher forbids it. Only Transitous. |
+| `permitted` | Licence is fine; excluded for a technical reason. |
+| `not-ingestible` / `unreachable` / `out-of-scope` | No GTFS to read / the host does not answer / not an intercity feed. |
+
 | Source | Why not |
 |---|---|
 | **Italy (Trenitalia)** | Publishes **NeTEx only** — a single 370MB XML, no GTFS. Our ingester reads GTFS. Partial mitigation: the French Trenitalia feed carries Paris–Milano. |

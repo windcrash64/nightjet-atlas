@@ -8,10 +8,15 @@
       "publisher": "gtfs.de (data provided by DELFI e.V.)",
       "licence": "CC-BY-4.0",
       "licenceUrl": "https://creativecommons.org/licenses/by/4.0/",
-      "commercialUse": true,
       "attribution": "Timetable data: DELFI e.V. / gtfs.de (CC BY 4.0), © OpenStreetMap contributors",
       "covers": "ICE, IC, EC, ECE, EN (EuroNight), RJ (RailJet) — includes ÖBB, SNCF, SBB, PKP, ČD, MÁV, NS as operating agencies",
-      "notes": "Free tier covers the next 30 days. Verified 2026-08-31: 96 routes, 5,354 trips, 1,222 stops, 7 EuroNight routes."
+      "notes": "Free tier covers the next 30 days. Verified 2026-08-31: 96 routes, 5,354 trips, 1,222 stops, 7 EuroNight routes.",
+      "commercialUse": {
+        "status": "permitted",
+        "basis": "publisher",
+        "source": "https://gtfs.de/en/license/",
+        "verified": "2026-09-01"
+      }
     },
     {
       "id": "de-regional",
@@ -20,10 +25,15 @@
       "publisher": "gtfs.de (data provided by DELFI e.V.)",
       "licence": "CC-BY-4.0",
       "licenceUrl": "https://creativecommons.org/licenses/by/4.0/",
-      "commercialUse": true,
       "attribution": "Timetable data: DELFI e.V. / gtfs.de (CC BY 4.0), © OpenStreetMap contributors",
       "covers": "RB, RE, IRE, S-Bahn and non-federal railways",
-      "notes": "~12MB. Needed so a journey can reach places the long-distance network does not serve."
+      "notes": "~12MB. Needed so a journey can reach places the long-distance network does not serve.",
+      "commercialUse": {
+        "status": "permitted",
+        "basis": "publisher",
+        "source": "https://gtfs.de/en/license/",
+        "verified": "2026-09-01"
+      }
     },
     {
       "id": "es-renfe",
@@ -32,10 +42,16 @@
       "publisher": "Renfe Operadora",
       "licence": "CC-BY-4.0",
       "licenceUrl": "https://creativecommons.org/licenses/by/4.0/",
-      "commercialUse": true,
       "attribution": "Timetable data: Renfe Operadora (CC BY 4.0)",
       "covers": "AVE, AVLO, ALVIA, Intercity, AVANT, MD, Regional Exprés",
-      "notes": "Rail-only: all 672 routes are route_type=2, so no filtering is needed. Publisher-direct and keyless. Verified 2026-09-01: HTTP 200, 688,573 bytes. Deliberately bypasses the Spanish NAP, which returns 401 without an API key."
+      "notes": "Rail-only: all 672 routes are route_type=2, so no filtering is needed. Publisher-direct and keyless. Verified 2026-09-01: HTTP 200, 688,573 bytes. Deliberately bypasses the Spanish NAP, which returns 401 without an API key.",
+      "commercialUse": {
+        "status": "permitted",
+        "basis": "publisher",
+        "source": "https://data.renfe.com/",
+        "verified": "2026-09-01",
+        "note": "Licencia: Creative Commons Attribution 4.0, quoted from the dataset page. Unencumbered."
+      }
     },
     {
       "id": "ch-national",
@@ -44,7 +60,6 @@
       "publisher": "Open data platform mobility Switzerland (ODMCH), operated by SBB",
       "licence": "opentransportdata.swiss terms of use",
       "licenceUrl": "https://opentransportdata.swiss/en/terms-of-use/",
-      "commercialUse": true,
       "attribution": "Timetable data: opentransportdata.swiss (SBB)",
       "covers": "IC, IR, EC, NJ, TGV, ICE, RJX, PE and Swiss regional rail",
       "keepModes": [
@@ -53,7 +68,13 @@
         "ferry"
       ],
       "maxRouteType": 105,
-      "notes": "232MB zipped, ~3.7GB unpacked, and there is NO rail-only variant — the file is the whole country including municipal buses, so keepModes filters it during ingest. The permalink 302s to a 60-second presigned S3 URL, so it must be followed each run rather than cached. Switzerland is the hub of European rail: it is where German, French and Italian long-distance services meet. maxRouteType keeps only long-distance and express rail (GTFS extended types 100-105): including Swiss regional and S-Bahn made them 70% of the whole graph and tripled search latency for one small country."
+      "notes": "232MB zipped, ~3.7GB unpacked, and there is NO rail-only variant — the file is the whole country including municipal buses, so keepModes filters it during ingest. The permalink 302s to a 60-second presigned S3 URL, so it must be followed each run rather than cached. Switzerland is the hub of European rail: it is where German, French and Italian long-distance services meet. maxRouteType keeps only long-distance and express rail (GTFS extended types 100-105): including Swiss regional and S-Bahn made them 70% of the whole graph and tripled search latency for one small country.",
+      "commercialUse": {
+        "status": "permitted",
+        "basis": "publisher",
+        "source": "https://opentransportdata.swiss/en/terms-of-use/",
+        "verified": "2026-09-01"
+      }
     },
     {
       "id": "nl-national",
@@ -62,7 +83,6 @@
       "publisher": "OVapi / Stichting OpenGeo, feed produced by Bliksem Labs B.V.",
       "licence": "CC0-1.0",
       "licenceUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
-      "commercialUse": true,
       "attribution": "Timetable data: OVapi / OpenOV (CC0)",
       "covers": "NS Intercity, Intercity Direct, Sprinter, and international services via NS International",
       "keepModes": [
@@ -70,7 +90,14 @@
         "night_rail",
         "ferry"
       ],
-      "notes": "213MB zipped and mostly buses, so keepModes filters it during ingest. CC0 imposes no attribution obligation at all; we credit anyway because EU Delegated Regulation 2017/1926 Art. 8(3) requires the source to be shown regardless of licence. Verified 2026-09-01: HTTP 200, 213,222,500 bytes."
+      "notes": "213MB zipped and mostly buses, so keepModes filters it during ingest. CC0 imposes no attribution obligation at all; we credit anyway because EU Delegated Regulation 2017/1926 Art. 8(3) requires the source to be shown regardless of licence. Verified 2026-09-01: HTTP 200, 213,222,500 bytes.",
+      "commercialUse": {
+        "status": "permitted",
+        "basis": "publisher",
+        "source": "https://gtfs.openov.nl/",
+        "verified": "2026-09-01",
+        "note": "CC0: no attribution legally required. We credit anyway."
+      }
     },
     {
       "id": "fr-sncf",
@@ -79,52 +106,85 @@
       "publisher": "SNCF Voyageurs, via transport.data.gouv.fr",
       "licence": "ODbL-1.0",
       "licenceUrl": "https://opendatacommons.org/licenses/odbl/1-0/",
-      "commercialUse": true,
       "attribution": "Timetable data: SNCF Voyageurs, via transport.data.gouv.fr (ODbL 1.0)",
       "covers": "TGV, Intercités, TER — 578 rail routes plus 111 SNCF coach routes",
-      "notes": "SHARE-ALIKE. ODbL attaches to a derived DATABASE, not only to the file: publishing a database derived from this obliges us to license that derivative under ODbL too. It is fine to serve journey RESULTS, but src/data/network.json must not be published as a dataset while this feed is in it. Verified 2026-09-01: HTTP 200, 4,048,404 bytes."
+      "notes": "SHARE-ALIKE. ODbL attaches to a derived DATABASE, not only to the file: publishing a database derived from this obliges us to license that derivative under ODbL too. It is fine to serve journey RESULTS, but src/data/network.json must not be published as a dataset while this feed is in it. Verified 2026-09-01: HTTP 200, 4,048,404 bytes.",
+      "commercialUse": {
+        "status": "permitted-with-condition",
+        "basis": "publisher",
+        "source": "https://transport.data.gouv.fr/",
+        "verified": "2026-09-01",
+        "condition": "ODbL share-alike attaches to a derived DATABASE. Serving journey RESULTS is fine; publishing src/data/network.json as a dataset is not, while this feed is in it. Categorically different from the unencumbered CC-BY feeds, which a boolean true flattened."
+      }
     }
   ],
   "_deliberatelyExcluded": [
     {
       "id": "de-local",
+      "status": "out-of-scope",
       "reason": "272MB of buses, trams and subways. Out of scope for an intercity A→B planner, and it would dominate the graph. Revisit only for first/last-mile."
     },
     {
       "id": "transitous",
+      "status": "prohibited",
       "reason": "api.transitous.org prohibits commercial use and requires consuming projects be open source. Their feed CATALOGUE is CC0 and we may use it as a roadmap, but we must never depend on their servers."
     },
     {
       "id": "de-realtime",
+      "status": "permitted-with-condition",
       "reason": "DELFI's GTFS-RT realtime feed is CC-BY-SA (share-alike), unlike the CC-BY static feed. Keep it out until it can live in an isolated pipeline stage where share-alike cannot reach the rest of the data."
     },
     {
       "id": "it-trenitalia",
+      "status": "not-ingestible",
       "reason": "Italy publishes NeTEx only — a single 370MB trenitalia.xml, no GTFS. Our ingester reads GTFS, so Italy cannot be added without a NeTEx parser. Partial mitigation: the French Trenitalia feed carries Paris–Milano."
     },
     {
       "id": "at-mvo",
+      "status": "unreachable",
       "reason": "Austria's Mobilitätsverbünde host refuses TCP on 443, and every dataset needs a Keycloak OAuth token. Partial mitigation: the German long-distance feed already carries ÖBB as an operating agency with RJ, EN, EC, IC and ICE services into Austria."
     },
     {
       "id": "be-sncb",
+      "status": "unconfirmed",
       "reason": "The Belgian feed serves 1,489 rail routes but states NO licence at all — unlike its neighbours, which all carry CC-BY-4.0. Technically working, legally unestablished. Do not ingest until a licence is confirmed."
     },
     {
       "id": "dk-rejseplanen",
-      "reason": "Working feed, unestablished terms, and the only unserved capital in reach — Copenhagen has ZERO services in our network today, unlike Prague (166), Vienna (183) and Budapest (34), which cross-border trains already cover. www.rejseplanen.info/labs/GTFS.zip serves a real 51MB zip keylessly (verified HTTP 206, valid archive) but no licence document has been retrievable by two independent attempts. Highest-value addition IF a licence can be confirmed; the block is legal, not technical. Ask Rejseplanen directly rather than searching again."
+      "status": "unconfirmed",
+      "reason": "Working feed, unestablished terms, and the only unserved capital in reach — Copenhagen has ZERO services in our network today, unlike Prague (166), Vienna (183) and Budapest (34), which cross-border trains already cover. www.rejseplanen.info/labs/GTFS.zip serves a real 51MB zip keylessly (verified HTTP 206, valid archive) but no licence document has been retrievable by two independent attempts. The block is legal, not technical. WHEN ASKING REJSEPLANEN, ask the specific question: the feed carries DSB as agency 203 with IC, ICL and RE, and international RJ and ECE on that same agency, so what we need permission for is redistributing CROSS-BORDER services in a commercial journey planner — not Danish domestic reuse in general. A specific question gets a usable yes or no; a general one gets a policy page."
     },
     {
       "id": "se-trafiklab",
+      "status": "unconfirmed",
       "reason": "Works through an undocumented door. opendata.samtrafiken.se returns 403 without a key, but api.resrobot.se/gtfs/sweden.zip serves 43MB keylessly with Samtrafiken i Sverige AB as publisher in feed_info.txt (SJ, Snalltaget, VR Snabbtag, Oresundstag present). Being reachable is not being licensed, and this is not the documented distribution route. Do not build on it silently."
     },
     {
       "id": "pl-rail",
+      "status": "claimed",
       "reason": "No defensible licence. Poland publishes NO official rail GTFS: dane.gov.pl carries only urban feeds, and PKP Intercity, PKP PLK and POLREGIO are not registered as data-providing institutions at all. The one official source, pdp-api.plk-sa.pl, is JSON-only behind registration plus 3-5 days of manual approval, and its footer reads \"Wszelkie prawa zastrzeżone\" (all rights reserved). The CC-BY-4.0 on the gtfs.kasznia.net rehost is the Transitous maintainers own characterisation and traces to no PKP grant, so the rehost may rest on an unfounded licence claim. Excluded on licence grounds, not merely fragility. See docs/research/cz-pl-rail-feeds-2026-09.md"
     },
     {
       "id": "cz-cisjr",
+      "status": "permitted",
       "reason": "Viable and deferred, not rejected. Czechia has the cleanest licence of any feed examined: the Ministry of Transport publishes via portal.cisjr.cz and data.gov.cz declares CC0 plus explicit disclaimers of copyright, database copyright and sui generis database right. But it ships NeTEx and CZPTT XML only - there is no gtfs folder - so adopting it means owning a NeTEx-to-GTFS converter and synthesising extended route types 100-105 ourselves, since NeTEx has no route_type. Worth doing to remove the single-volunteer dependency; de-risk by diffing converter output against data.jr.ggu.cz before cutting over. Also check the payload: the metadata declares \"contains personal data\", which CC0 does not waive. See docs/research/cz-pl-rail-feeds-2026-09.md"
     }
-  ]
+  ],
+  "_commercialUseStates": {
+    "permitted": "Licence read at the publisher and it permits commercial reuse.",
+    "permitted-with-condition": "Permitted, but an obligation attaches (see condition). Not the same as unencumbered.",
+    "claimed": "A third party asserts a licence the publisher does not grant. NOT a licence. Poland is the example: a rehost tagged CC-BY-4.0 with no PKP grant behind it.",
+    "unconfirmed": "No licence document could be retrieved. This is an AVAILABILITY gap, not a legal finding — it does NOT mean checked and refused, and a later pass must not retire the feed on it.",
+    "prohibited": "The publisher states terms that forbid it. Only api.transitous.org qualifies."
+  },
+  "_excludedStates": {
+    "unconfirmed": "Licence text could not be retrieved. NOT a prohibition, and NOT a finding that reuse is refused — the feeds work and their terms are simply unestablished. A later pass must not read this as \"checked and refused\" and retire them.",
+    "claimed": "A third party asserts a licence the publisher does not grant.",
+    "prohibited": "The publisher forbids it.",
+    "permitted": "Licence is fine; excluded for a technical reason instead.",
+    "permitted-with-condition": "Licence is fine but carries an obligation that makes it unsafe to mix with the rest.",
+    "not-ingestible": "No GTFS exists to read.",
+    "unreachable": "The host does not answer.",
+    "out-of-scope": "Works and is licensed, but does not belong in an intercity planner."
+  }
 }
