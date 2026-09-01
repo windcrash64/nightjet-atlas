@@ -19,6 +19,42 @@ function dayOffset(min) {
   return Math.floor(min / 1440);
 }
 
+/** Today as YYYY-MM-DD, for a native date input. Local, not UTC. */
+function isoToday() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** "2026-09-01" -> 20260901, the compact form the API takes. */
+function isoToYmd(iso) {
+  return Number(iso.replace(/-/g, '')) || 0;
+}
+
+/** YYYYMMDD plus n days, back as an ISO string for the input's max. */
+function isoPlusDays(ymd, n) {
+  const d = new Date(Date.UTC(Math.floor(ymd / 10000), (Math.floor(ymd / 100) % 100) - 1, ymd % 100));
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+/** "Today", "Tomorrow", or a short weekday-and-date. */
+function dayLabel(iso) {
+  const today = isoToday();
+  if (iso === today) return 'Today';
+  const t = new Date(`${today}T00:00:00`);
+  t.setDate(t.getDate() + 1);
+  if (iso === `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`) {
+    return 'Tomorrow';
+  }
+  // 'en-GB' rather than the browser's locale: the rest of the page is English,
+  // and a machine set to another language rendered this one label as
+  // "6 Eyl Paz" beside otherwise English copy. Day-before-month also matches
+  // how every country in the data writes a date.
+  return new Date(`${iso}T00:00:00`).toLocaleDateString('en-GB', {
+    weekday: 'short', day: 'numeric', month: 'short',
+  });
+}
+
 function dur(min) {
   if (min == null) return 'unavailable';
   const h = Math.floor(min / 60);
@@ -198,6 +234,10 @@ export default function App() {
   const [from, setFrom] = useState(START.from);
   const [to, setTo] = useState(START.to);
   const [departHour, setDepartHour] = useState(8);
+  // An ISO date for the input, defaulting to today. The trains that run vary
+  // by the day — only about a quarter of the network operates on any given
+  // date — so this is not a refinement, it is what makes the answer true.
+  const [date, setDate] = useState(() => isoToday());
   const [state, setState] = useState({ status: 'idle', journeys: [] });
   const [selected, setSelected] = useState(0);
   const [reduced, setReduced] = useState(false);
@@ -209,14 +249,17 @@ export default function App() {
     return () => mq.removeEventListener('change', on);
   }, []);
 
-  const run = useCallback(async (o = from, d = to, h = departHour) => {
+  const run = useCallback(async (o = from, d = to, h = departHour, when = date) => {
     setState({ status: 'loading', journeys: [] });
     setSelected(0);
     try {
       const r = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from: { lat: o.lat, lon: o.lon }, to: { lat: d.lat, lon: d.lon }, departHour: h }),
+        body: JSON.stringify({
+          from: { lat: o.lat, lon: o.lon }, to: { lat: d.lat, lon: d.lon },
+          departHour: h, date: isoToYmd(when),
+        }),
       });
       const data = await r.json();
       if (!r.ok) { setState({ status: 'error', message: data.error, journeys: [] }); return; }
@@ -224,11 +267,12 @@ export default function App() {
         status: 'done', journeys: data.journeys ?? [],
         coverage: data.coverage, sources: data.sources,
         generatedAt: data.generatedAt, tookMs: data.tookMs,
+        calendar: data.calendar,
       });
     } catch {
       setState({ status: 'error', message: 'The search service is not responding.', journeys: [] });
     }
-  }, [from, to, departHour]);
+  }, [from, to, departHour, date]);
 
   useEffect(() => { run(); /* eslint-disable-next-line */ }, []);
 
@@ -255,18 +299,37 @@ export default function App() {
           id="from" label="From" value={fromText} place={from}
           placeholder="Any station or city"
           onText={setFromText}
-          onPick={(p) => { setFrom(p); setFromText(p.name); run(p, to, departHour); }}
+          onPick={(p) => { setFrom(p); setFromText(p.name); run(p, to, departHour, date); }}
         />
         <PlaceField
           id="to" label="To" value={toText} place={to}
           placeholder="Where you're going"
           onText={setToText}
-          onPick={(p) => { setTo(p); setToText(p.name); run(from, p, departHour); }}
+          onPick={(p) => { setTo(p); setToText(p.name); run(from, p, departHour, date); }}
         />
+        <div className="field field--date">
+          <label htmlFor="when">On</label>
+          <input
+            id="when" type="date" value={date}
+            min={isoToday()}
+            // Bounded by the calendars we actually ingested. Beyond the
+            // horizon the server stops filtering by day, so the answer would
+            // quietly go back to "every train, any day" — better to not offer
+            // the date at all than to answer it wrongly.
+            max={state.calendar?.from
+              ? isoPlusDays(state.calendar.from, (state.calendar.days ?? 1) - 1)
+              : undefined}
+            onChange={(e) => {
+              const v = e.target.value || isoToday();
+              setDate(v); run(from, to, departHour, v);
+            }}
+          />
+          <span className="field-note">{dayLabel(date)}</span>
+        </div>
         <div className="field field--time">
           <label htmlFor="depart">Leave after</label>
           <select id="depart" value={departHour}
-                  onChange={(e) => { const h = Number(e.target.value); setDepartHour(h); run(from, to, h); }}>
+                  onChange={(e) => { const h = Number(e.target.value); setDepartHour(h); run(from, to, h, date); }}>
             {Array.from({ length: 24 }, (_, h) => (
               <option key={h} value={h}>{String(h).padStart(2, '0')}:00</option>
             ))}
@@ -285,7 +348,7 @@ export default function App() {
             onClick={() => {
               setFrom(ex.from); setTo(ex.to); setDepartHour(ex.hour);
               setFromText(ex.from.name); setToText(ex.to.name);
-              run(ex.from, ex.to, ex.hour);
+              run(ex.from, ex.to, ex.hour, date);
             }}
           >
             {ex.label}
@@ -311,12 +374,44 @@ export default function App() {
           )}
 
           {state.status === 'done' && !state.journeys.length && (
-            <p className="notice">
-              {state.coverage ?? 'No journey found between those places on this data.'}
-              {' '}We carry the published timetables of Germany, France, Spain, Switzerland
-              and the Netherlands, which reach their neighbours wherever a train
-              crosses the border. Somewhere further afield will not be here yet.
-            </p>
+            // Two different failures used to read as one. `coverage` means we
+            // have no station near that place at all; without it, the places
+            // are known and it is this DAY and hour that has nothing — which
+            // is a normal answer now that only about a quarter of the network
+            // runs on any given date. Saying "we don't go there" to someone
+            // who picked a quiet Tuesday evening is simply untrue.
+            <div className="notice">
+              {state.coverage ? (
+                <p>
+                  {state.coverage} We carry the published timetables of Germany,
+                  France, Spain, Switzerland and the Netherlands, which reach
+                  their neighbours wherever a train crosses the border.
+                  Somewhere further afield will not be here yet.
+                </p>
+              ) : (
+                <>
+                  <p>
+                    {/* "on today" reads wrong; "today" and "tomorrow" are
+                        adverbs, a weekday needs the preposition. */}
+                    Nothing runs this way {dayLabel(date) === 'Today' || dayLabel(date) === 'Tomorrow'
+                      ? dayLabel(date).toLowerCase()
+                      : `on ${dayLabel(date)}`} after {String(departHour).padStart(2, '0')}:00.
+                    {' '}The trains that run vary by the day, so another date or an
+                    earlier start often has one.
+                  </p>
+                  <p className="notice-actions">
+                    <button type="button" onClick={() => {
+                      const h = Math.max(0, departHour - 4);
+                      setDepartHour(h); run(from, to, h, date);
+                    }}>Leave earlier</button>
+                    <button type="button" onClick={() => {
+                      const next = isoPlusDays(isoToYmd(date), 1);
+                      setDate(next); run(from, to, departHour, next);
+                    }}>Try the next day</button>
+                  </p>
+                </>
+              )}
+            </div>
           )}
 
           {state.status === 'done' && state.journeys.length > 0 && (

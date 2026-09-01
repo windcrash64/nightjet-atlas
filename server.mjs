@@ -168,6 +168,11 @@ function handleSearch(body, res) {
     // EU Delegated Regulation 2017/1926 Art. 8(3) requires the source and the
     // last-update time of static data to be shown wherever it is reused.
     generatedAt: network.generatedAt,
+    // Which date this answered for, and the range the ingested calendars
+    // actually cover. The UI bounds its date picker to this rather than
+    // letting someone ask for a day we have no calendar for.
+    date,
+    calendar: { from: network.calendarEpoch ?? null, days: network.calendarDays ?? 0 },
     tookMs: Date.now() - t0,
   });
 }

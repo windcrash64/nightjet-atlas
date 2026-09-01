@@ -73,10 +73,23 @@ h1, h2 { margin: 0; font-weight: 800; letter-spacing: -0.02em; text-wrap: balanc
 
 .search {
   display: grid; gap: var(--s3); margin-block: var(--s6);
-  grid-template-columns: 1fr 1fr auto auto; align-items: end;
+  grid-template-columns: 1fr 1fr auto auto auto; align-items: end;
 }
+@media (max-width: 1000px) { .search { grid-template-columns: 1fr 1fr auto auto; } }
 @media (max-width: 900px) { .search { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 620px) { .search { grid-template-columns: 1fr; } }
+
+/* The date input keeps its own note ("Today", "Tomorrow", "Sat 5 Sep") below
+   the control rather than inside it, where the native picker's own chrome
+   sits. */
+.field--date { position: relative; }
+.field--date .field-note {
+  position: static; margin-top: 2px; text-align: right;
+}
+.field--date input {
+  /* Safari renders date inputs shorter than text inputs unless told not to. */
+  min-height: 2.9rem;
+}
 
 .field { display: flex; flex-direction: column; gap: var(--s1); position: relative; }
 .field label {
@@ -272,6 +285,19 @@ button.go:disabled { opacity: 0.45; cursor: progress; transform: none; }
   color: var(--text-dim); background: var(--surface);
 }
 .notice--error { border-color: #8b6f47; color: var(--text); }
+.notice p { margin: 0; }
+.notice p + p { margin-top: var(--s3); }
+
+/* An empty result is a dead end unless it offers the way out of it. */
+.notice-actions { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.notice-actions button {
+  background: none; border: 1px solid var(--line); color: var(--text);
+  font: inherit; font-size: 0.85rem; padding: 5px 11px; border-radius: 2px;
+  cursor: pointer; transition: border-color 140ms var(--editorial);
+}
+@media (hover: hover) {
+  .notice-actions button:hover { border-color: var(--text-faint); }
+}
 
 footer {
   margin-top: var(--s12); padding-top: var(--s6);
