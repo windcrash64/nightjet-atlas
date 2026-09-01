@@ -15,6 +15,8 @@
  * invents one.
  */
 
+import { packCalls } from './calls.js';
+
 const WALK_METRES_PER_MIN = 80;   // ~4.8 km/h, a real walking pace with luggage
 const MAX_TRANSFER_WALK_M = 800;  // beyond this, it isn't a transfer, it's a leg
 const MIN_TRANSFER_MIN = 5;       // minimum time to change platforms
@@ -82,6 +84,14 @@ export function haversineM(aLat, aLon, bLat, bLon) {
 export function buildIndex(network) {
   const { stops, services } = network;
 
+  // Stop-times move into typed columns before anything else reads them. As
+  // nested `[stop, arrive, depart]` arrays the network's 3,158,637 rows cost
+  // ~450MB of object headers; packed they cost 25.6MB. See lib/calls.js — it
+  // is the difference between a 4GB box and the smallest VPS anyone rents.
+  const calls = packCalls(services);
+  // The nested arrays are dead now, and holding them would forfeit the saving.
+  for (let si = 0; si < services.length; si++) services[si].c = null;
+
   // Group trips that call at exactly the same stops in the same order. In this
   // network 113,835 trips collapse to 15,546 patterns — 7.3 trips per pattern,
   // and up to 460 for a busy S-Bahn line. That is the whole point of RAPTOR:
@@ -91,14 +101,16 @@ export function buildIndex(network) {
   const patterns = [];        // patterns[p] = { stops: Int32Array, trips: number[] }
   const patternIds = new Map();
   for (let si = 0; si < services.length; si++) {
-    const calls = services[si].c;
+    const n = calls.count(si);
     let key = '';
-    for (let ci = 0; ci < calls.length; ci++) key += calls[ci][0] + ',';
+    for (let ci = 0; ci < n; ci++) key += calls.stopAt(si, ci) + ',';
     let p = patternIds.get(key);
     if (p === undefined) {
       p = patterns.length;
       patternIds.set(key, p);
-      patterns.push({ stops: Int32Array.from(calls.map((c) => c[0])), trips: [] });
+      // A copy, not the subarray view: patterns outlive the loop and a view
+      // would pin the whole column buffer per pattern.
+      patterns.push({ stops: Int32Array.from(calls.stopsOf(si)), trips: [] });
     }
     patternOf[si] = p;
     patterns[p].trips.push(si);
@@ -106,7 +118,7 @@ export function buildIndex(network) {
   // Trips within a pattern in departure order, so the first boardable one is
   // found by scanning forward rather than by sorting per query.
   for (const p of patterns) {
-    p.trips.sort((a, b) => (services[a].c[0][2] ?? 0) - (services[b].c[0][2] ?? 0));
+    p.trips.sort((a, b) => calls.departAt(a, 0) - calls.departAt(b, 0));
   }
 
   // Which patterns call at each stop, and at which position along them.
@@ -120,16 +132,19 @@ export function buildIndex(network) {
     }
   }
 
-  // Which services call at each stop, and at which position in their run.
-  const byStop = new Map();
+  // Which services call at each stop. Its one consumer only ever counts how
+  // many of them are long-distance, so the call position is not stored and the
+  // whole thing is a CSR pair of typed arrays rather than 3.1M small arrays:
+  // count per stop, prefix-sum into offsets, then fill.
+  const stopCallCount = new Int32Array(stops.length + 1);
+  for (let k = 0; k < calls.rows; k++) stopCallCount[calls.stop[k] + 1]++;
+  for (let s = 0; s < stops.length; s++) stopCallCount[s + 1] += stopCallCount[s];
+  const stopServiceOffset = stopCallCount;          // now the offsets themselves
+  const stopServices = new Int32Array(calls.rows);
+  const fill = Int32Array.from(stopServiceOffset.subarray(0, stops.length));
   for (let si = 0; si < services.length; si++) {
-    const calls = services[si].c;
-    for (let ci = 0; ci < calls.length; ci++) {
-      const stopIdx = calls[ci][0];
-      let arr = byStop.get(stopIdx);
-      if (!arr) { arr = []; byStop.set(stopIdx, arr); }
-      arr.push([si, ci]);
-    }
+    const n = calls.count(si);
+    for (let ci = 0; ci < n; ci++) stopServices[fill[calls.stopAt(si, ci)]++] = si;
   }
 
   // Stops close enough to walk between, for transfers between nearby stations.
@@ -143,10 +158,14 @@ export function buildIndex(network) {
     b.push(i);
   }
 
-  const footpaths = new Map();
-  for (let i = 0; i < stops.length; i++) {
+  // 3,633,186 walkable pairs. As a Map of arrays-of-pairs that is ~350MB of
+  // headers; as CSR typed arrays it is 18MB. Walk minutes fit a Uint8 because
+  // MAX_TRANSFER_WALK_M / WALK_METRES_PER_MIN is 10.
+  //
+  // Two passes: count per stop to size the columns, then fill. Counting twice
+  // costs a second haversine sweep, which is cheaper than growing arrays.
+  const neighboursOf = (i, visit) => {
     const s = stops[i];
-    const near = [];
     const cy = Math.round(s.y * 100), cx = Math.round(s.x * 100);
     for (let dy = -1; dy <= 1; dy++) {
       for (let dx = -1; dx <= 1; dx++) {
@@ -155,16 +174,32 @@ export function buildIndex(network) {
         for (const j of b) {
           if (j === i) continue;
           const d = haversineM(s.y, s.x, stops[j].y, stops[j].x);
-          if (d <= MAX_TRANSFER_WALK_M) {
-            near.push([j, Math.max(1, Math.round(d / WALK_METRES_PER_MIN))]);
-          }
+          if (d <= MAX_TRANSFER_WALK_M) visit(j, d);
         }
       }
     }
-    if (near.length) footpaths.set(i, near);
+  };
+
+  const footOffset = new Int32Array(stops.length + 1);
+  for (let i = 0; i < stops.length; i++) neighboursOf(i, () => { footOffset[i + 1]++; });
+  for (let i = 0; i < stops.length; i++) footOffset[i + 1] += footOffset[i];
+
+  const footTo = new Int32Array(footOffset[stops.length]);
+  const footMin = new Uint8Array(footOffset[stops.length]);
+  for (let i = 0; i < stops.length; i++) {
+    let k = footOffset[i];
+    neighboursOf(i, (j, d) => {
+      footTo[k] = j;
+      footMin[k] = Math.max(1, Math.round(d / WALK_METRES_PER_MIN));
+      k++;
+    });
   }
 
-  return { network, byStop, footpaths, patterns, patternsAtStop, patternOf };
+  return {
+    network, calls, patterns, patternsAtStop, patternOf,
+    stopServices, stopServiceOffset,
+    footTo, footMin, footOffset,
+  };
 }
 
 /** Stops within `radiusM` of a coordinate, nearest first. */
@@ -198,10 +233,11 @@ export function accessStops(index, lat, lon, radiusM = 4000, limit = 8) {
   // being served by named long-distance services — using the SAME classifier
   // the search uses, rather than a second copy that can drift out of step.
   const scored = near.map((n) => {
-    const calls = index.byStop.get(n.idx) ?? [];
+    const start = index.stopServiceOffset[n.idx];
+    const end = index.stopServiceOffset[n.idx + 1];
     let longDistance = 0;
-    for (const [svcIdx] of calls) {
-      if (isLongDistance(services[svcIdx])) longDistance++;
+    for (let k = start; k < end; k++) {
+      if (isLongDistance(services[index.stopServices[k]])) longDistance++;
     }
     return { ...n, name: stops[n.idx].n, longDistance };
   });
@@ -388,6 +424,7 @@ function rank(journeys, limit) {
 export function search(index, origins, destinations, departAfterMin, opts = {}) {
   const { maxRounds = 4, maxJourneys = 8 } = opts;
   const { services } = index.network;
+  const { calls } = index;
   const destSet = new Map(destinations.map((d) => [d.idx, d.distanceM]));
 
   // best[stop] = earliest known arrival minute
@@ -440,8 +477,7 @@ export function search(index, origins, destinations, departAfterMin, opts = {}) 
       // we can actually catch.
       let svcIdx = -1;
       for (const candidate of pattern.trips) {
-        const d = services[candidate].c[pos][2];
-        if (d == null) continue;
+        const d = calls.departAt(candidate, pos);
         const buffer = label.get(stopIdx)?.kind === 'ride' ? MIN_TRANSFER_MIN : 0;
         if (d >= readyAt + buffer) { svcIdx = candidate; break; }
       }
@@ -450,8 +486,7 @@ export function search(index, origins, destinations, departAfterMin, opts = {}) 
       {
         const svc = services[svcIdx];
         const callIdx = pos;
-        const dep = svc.c[callIdx][2];
-        if (dep == null) continue;
+        const dep = calls.departAt(svcIdx, callIdx);
 
         // Local services are how you reach and leave a city, not how you cross
         // a country. Boarding a third regional train mid-journey explodes the
@@ -476,9 +511,10 @@ export function search(index, origins, destinations, departAfterMin, opts = {}) 
         if (wait > (isSleeper ? MAX_SLEEPER_WAIT_MIN : MAX_CONNECTION_WAIT_MIN)) continue;
 
         // Ride to every later call on this service.
-        for (let ci = callIdx + 1; ci < svc.c.length; ci++) {
-          const [toStop, arr] = svc.c[ci];
-          if (arr == null) continue;
+        const nCalls = calls.count(svcIdx);
+        for (let ci = callIdx + 1; ci < nCalls; ci++) {
+          const toStop = calls.stopAt(svcIdx, ci);
+          const arr = calls.arriveAt(svcIdx, ci);
           const known = best.get(toStop);
           if (known != null && arr >= known) continue;
 
@@ -511,10 +547,12 @@ export function search(index, origins, destinations, departAfterMin, opts = {}) 
     const walkedTo = [];
     for (const stopIdx of nextFrontier) {
       if (label.get(stopIdx)?.kind !== 'ride') continue;
-      const near = index.footpaths.get(stopIdx);
-      if (!near) continue;
+      const fStart = index.footOffset[stopIdx];
+      const fEnd = index.footOffset[stopIdx + 1];
       const from = best.get(stopIdx);
-      for (const [toStop, mins] of near) {
+      for (let f = fStart; f < fEnd; f++) {
+        const toStop = index.footTo[f];
+        const mins = index.footMin[f];
         const t = from + mins;
         const known = best.get(toStop);
         if (known != null && t >= known) continue;
@@ -622,10 +660,10 @@ function reconstruct(index, label, endStop, finalWalkM) {
     legs.unshift({
       mode: svc.m, service: svc.s || null, operator: svc.o || null,
       headsign: svc.h || null,
-      from: stopOf(stops, svc.c[l.fromCall][0]),
-      to: stopOf(stops, svc.c[l.toCall][0]),
-      departMin: svc.c[l.fromCall][2],
-      arriveMin: svc.c[l.toCall][1],
+      from: stopOf(stops, index.calls.stopAt(l.svcIdx, l.fromCall)),
+      to: stopOf(stops, index.calls.stopAt(l.svcIdx, l.toCall)),
+      departMin: index.calls.departAt(l.svcIdx, l.fromCall),
+      arriveMin: index.calls.arriveAt(l.svcIdx, l.toCall),
       intermediateStops: l.toCall - l.fromCall - 1,
       price: null,
     });

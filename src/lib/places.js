@@ -84,9 +84,13 @@ export function cityNameFrom(stationName) {
 
 /** How much long-distance service a stop sees. */
 export function serviceScore(network, index, stopIdx) {
+  // Reads the router's CSR columns: services calling at `stopIdx` occupy
+  // stopServices[stopServiceOffset[stopIdx] .. stopServiceOffset[stopIdx+1]].
+  const start = index.stopServiceOffset[stopIdx];
+  const end = index.stopServiceOffset[stopIdx + 1];
   let n = 0;
-  for (const [svcIdx] of index.byStop.get(stopIdx) ?? []) {
-    const svc = network.services[svcIdx];
+  for (let k = start; k < end; k++) {
+    const svc = network.services[index.stopServices[k]];
     const cls = (svc.s || '').trim().toUpperCase().split(/[\s\d]/)[0];
     if (svc.m === 'night_rail' || LONG_DISTANCE.has(cls)) n++;
   }

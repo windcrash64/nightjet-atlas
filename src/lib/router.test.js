@@ -100,7 +100,8 @@ test('walking transfers between nearby stations are found', () => {
   }
   // Not asserting it is chosen — ICE 2 arrives earlier. The point is the
   // footpath index exists and does not crash the search.
-  assert.ok(idx.footpaths.get(1)?.some(([j]) => j === 3), 'B Hbf and B Nord must be linked');
+  const walkTargets = [...idx.footTo.subarray(idx.footOffset[1], idx.footOffset[2])];
+  assert.ok(walkTargets.includes(3), 'B Hbf and B Nord must be linked');
 });
 
 test('a sleeper is detected and its duration measured', () => {
