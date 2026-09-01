@@ -16,14 +16,14 @@ request.
 
 ```bash
 npm install
-node scripts/ingest.mjs   # downloads the feeds, builds src/data/network.json (~83MB, gitignored)
+node scripts/ingest.mjs   # downloads the feeds, builds src/data/network.json (~103MB, gitignored)
                           # Switzerland needs headroom: NODE_OPTIONS=--max-old-space-size=6144
 node server.mjs           # routing API on :8080
 npm run dev               # UI on :5173, proxies /api to :8080
 ```
 
 ```bash
-npm test              # 50 tests
+npm test              # 98 tests
 node scripts/bench.mjs  # cold search latency per corridor
 ```
 
@@ -39,8 +39,11 @@ node scripts/bench.mjs  # cold search latency per corridor
   Prague, Budapest, Copenhagen, Brussels, Vienna, Milan, Zagreb, Ljubljana and
   London St Pancras.
 - RAPTOR-style routing over patterns rather than trips. Median cold search
-  **383ms**, worst 448ms, measured by `scripts/bench.mjs`. Warm (cached)
-  searches return in 33–38ms.
+  **273ms**, worst 546ms, measured by `scripts/bench.mjs`. Warm (cached)
+  searches return in 33–40ms.
+- **Searches are filtered to the day you ask for**, defaulting to today. Only
+  117,470 of 384,515 services run on a given date (103,621 on a Sunday), so
+  three quarters of what the app used to offer was not actually running.
 - **The server holds 451MB resident**, measured on the running process. The
   hot structures — 3.2M stop-times, 3.6M footpaths, 3.2M stop→service entries
   — are CSR typed-array columns rather than millions of small JS arrays, which
@@ -55,9 +58,10 @@ node scripts/bench.mjs  # cold search latency per corridor
   Berlin–Munich 247min ICE 29, Amsterdam–Berlin 371min, Paris–Brussels 82min
   Eurostar (real ~1h22), Paris–London 217min, Berlin–Prague 250min (~4h),
   Berlin–Warszawa 330min, Vienna–Budapest 275min RJX.
-- 50 tests: 14 on the router, 13 on place search, 12 against the real ingested
-  network, plus journey normalisation. Every place-search test names a bug that
-  actually shipped.
+- 98 tests: 21 on the router, 13 on place search, 12 against the real ingested
+  network, 17 on the GTFS calendar, 15 on how the option list describes itself,
+  9 on the packed stop-time columns, plus solar position. Every place-search
+  test names a bug that actually shipped.
 
 **Deliberately absent:** prices. Open feeds carry schedules, not fares, and
 there is no free legitimate source of European rail prices. `price` is `null`
@@ -90,9 +94,14 @@ everywhere, enforced by a test.
   offset is added, because journeys crossing that boundary would be silently
   hours wrong.
 - **The 4,132-airport dataset is bundled but unused.** No flight routing yet.
-- **Berlin–Munich returns six departures of one train.** That is the honest
-  answer for that corridor and the UI now says so, but a "show later
-  departures" control would serve better than listing them.
+- **The date is server-side only.** /api/search takes a YYYYMMDD and defaults
+  to today, but nothing in the UI lets you pick one. That is the next obvious
+  feature now that the calendar is real.
+- **A sparse corridor can return nothing rather than something bad.**
+  Zurich–Hamburg at 19:00 today has no good option — the only itinerary the
+  unfiltered search finds is 14 hours with a 131-minute wait at Mannheim — so
+  the app shows none. That is the honest answer, but the UI should say *why*
+  rather than looking broken, and offering the next day would serve better.
 
 ## What the research established
 
