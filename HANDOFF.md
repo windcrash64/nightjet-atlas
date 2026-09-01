@@ -33,7 +33,7 @@ node scripts/bench.mjs  # cold search latency per corridor
 
 - 189,209 stops and 384,515 services from six commercially-licensed feeds
   covering Germany, France, Spain, Switzerland and the Netherlands (see
-  ).
+  `data/sources/registry.json`).
 - **Reach is wider than the ingested countries**, because a cross-border
   service carries its foreign stops with it. Verified routing to Warsaw,
   Prague, Budapest, Copenhagen, Brussels, Vienna, Milan, Zagreb, Ljubljana and
