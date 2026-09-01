@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Globe from './components/Globe.jsx';
+import { badgesFor, cadenceOf } from './lib/summarise.js';
 
 /* ---------- formatting ---------- */
 
@@ -231,34 +232,9 @@ export default function App() {
 
   useEffect(() => { run(); /* eslint-disable-next-line */ }, []);
 
-  // Which options deserve a badge. Computed from the set, not hardcoded.
-  const badges = useMemo(() => {
-    const j = state.journeys;
-    if (!j.length) return {};
-    const out = {};
-    const fastest = j.reduce((a, b) => (b.durationMin < a.durationMin ? b : a));
-    out[j.indexOf(fastest)] = 'Fastest';
-    const direct = j.filter((x) => x.transfers === 0)
-      .sort((a, b) => a.durationMin - b.durationMin)[0];
-    if (direct && !out[j.indexOf(direct)]) out[j.indexOf(direct)] = 'No changes';
-    const sleeper = j.find((x) => x.hasSleeper);
-    if (sleeper && !out[j.indexOf(sleeper)]) out[j.indexOf(sleeper)] = 'Sleep through it';
-    return out;
-  }, [state.journeys]);
-
-  /**
-   * When a corridor is served by one train running hourly, every option is the
-   * same service at a different time. Six identical rows look like a bug, so
-   * say plainly that the choice is only departure time.
-   */
-  const sameService = useMemo(() => {
-    const j = state.journeys;
-    if (j.length < 3) return null;
-    const spines = j.map((x) =>
-      x.legs.filter((l) => l.mode !== 'walk').map((l) => l.service).join('>'),
-    );
-    return new Set(spines).size === 1 ? spines[0] : null;
-  }, [state.journeys]);
+  // Both rules live in lib/summarise.js, where their edge cases are tested.
+  const badges = useMemo(() => badgesFor(state.journeys), [state.journeys]);
+  const cadence = useMemo(() => cadenceOf(state.journeys), [state.journeys]);
 
   const active = state.journeys[selected] ?? null;
 
@@ -349,10 +325,13 @@ export default function App() {
                 {state.journeys.length} way{state.journeys.length > 1 ? 's' : ''} to get there
                 <span className="list-took mono">{state.tookMs}ms</span>
               </h2>
-              {sameService && (
+              {cadence && (
                 <p className="list-note">
-                  One service runs this route — <strong>{sameService}</strong>. The
-                  only real choice here is when you leave.
+                  <strong>{cadence.spine}</strong> runs this route {cadence.every}
+                  {cadence.count < cadence.total
+                    ? ` — ${cadence.count} of these ${cadence.total} options are that train`
+                    : ''}
+                  . The choice here is mostly when you leave.
                 </p>
               )}
               <div className="options">

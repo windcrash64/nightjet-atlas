@@ -146,7 +146,14 @@ button.go:disabled { opacity: 0.45; cursor: progress; transform: none; }
    a strip where the journey arc is a few pixels tall — the map stops answering
    "where is this" and becomes decoration. */
 @media (max-width: 1080px) { .globe { aspect-ratio: 1 / 1; } }
-.globe canvas { display: block; }
+/* The canvas must never be able to push its own container wider.
+   R3F measures .globe to size the canvas, so a canvas that can outgrow the
+   box becomes the thing holding the box open — the measurement can shrink on
+   a grow but never on a shrink. Narrowing the window from desktop to 360px
+   left a 632px canvas in a 345px viewport, dragging 67 elements into
+   horizontal overflow. A fresh load at 360px was always fine, which is why
+   this hid from every static screenshot. */
+.globe canvas { display: block; max-width: 100%; max-height: 100%; }
 
 .globe--fallback {
   display: grid; place-items: center; padding: var(--s8);
