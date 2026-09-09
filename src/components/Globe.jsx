@@ -19,6 +19,9 @@ import * as THREE from 'three';
 const RADIUS = 2.4;
 
 const MODE_COLOUR = {
+  plane: '#90e4ce',
+  train: '#c1e7b1',
+  bus: '#c3a380',
   night_rail: '#f0c674',
   rail: '#8fc7e8',
   coach: '#c3a380',
@@ -211,7 +214,7 @@ function Scene({ journeys, activeIndex, reduced }) {
         {/* The ocean sphere, slightly inside the coastlines. */}
         <mesh>
           <sphereGeometry args={[RADIUS, 64, 48]} />
-          <meshBasicMaterial color="#0d1729" />
+        <meshBasicMaterial color="#152729" />
         </mesh>
         {/* A faint limb so the sphere reads as a globe, not a disc. */}
         <mesh scale={1.02}>

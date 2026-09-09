@@ -1,145 +1,97 @@
-# Deploying
+# Deploy Travel Freely
 
-One long-lived Node process on a small VPS, behind a reverse proxy, with a
-nightly ingest. No database, no queue, no container required.
+The default deployment is one Cloudflare Worker with Static Assets: the React application and `/api/*` share an origin. The Worker bundles the compact Germany long-distance timetable. The original large Node rail engine is an optional separate backend.
 
-## What it needs
+Current beta: [travel-freely.windcrash64.workers.dev](https://travel-freely.windcrash64.workers.dev/), published and checked on September 9, 2026. The public UI and API returned eight real Berlin–Munich timetable options for September 10; the fastest took 239 minutes.
 
-| | |
-|---|---|
-| Memory | **451MB resident**, measured on the running process. A 1GB box is enough; 2GB gives headroom for the ingest. |
-| Disk | **~6GB**, measured, and mostly not the app: `data/cache/` holds 5.4GB of downloaded zips and unpacked GTFS (Switzerland's `stop_times.txt` alone is 2.87GB), plus 104MB `network.json`, 239MB `node_modules`, 1.3MB `dist`. Size the box for the cache, not the output. |
-| CPU | One core serves fine — a cold search is ~270ms and the process is single-threaded. The ingest wants more, and ~20 minutes. |
-| Node | 24.x. `unzip` must be on PATH for the ingester. |
+## Build and verify
 
-**Not** Cloudflare Workers or Pages (128MB), and not Lambda-shaped: the index
-build takes ~6s, so the process has to stay warm. That 6s is why reloads swap
-data in place rather than restarting.
+Use Node.js 24, npm, and `unzip`. From the repository root:
 
-## First run
-
-```bash
-git clone https://github.com/windcrash64/nightjet-atlas.git
-cd nightjet-atlas
+```sh
 npm ci
-npm run build                                    # dist/, served by the same process
+npm run data:edge
+npm run check
+node scripts/build-cloudflare.mjs
+```
+
+`data:edge` downloads the compact publisher feed and atomically writes the gitignored `src/data/edge-network.json`. `check` runs tests and builds `dist/`. Packaging writes the compiled Worker, asset manifest, and size summary into `worker/.build/`; it refuses a Worker at or above the free plan's 3 MiB gzip bundle limit. Full deployment still requires a Cloudflare account with suitable access.
+
+The September 9 snapshot has 656 stations, 5,217 trips, and a September 5–October 5 calendar. These counts describe the snapshot, not guaranteed future feed contents. See [EDGE-DATA.md](docs/EDGE-DATA.md) for resource measurements and search limits.
+
+## Deploy with account credentials
+
+Provide these environment variables through your shell's secure credential handling or your CI secret store:
+
+| Name | Purpose |
+| --- | --- |
+| `CLOUDFLARE_ACCOUNT_ID` | Destination account ID |
+| `CLOUDFLARE_API_TOKEN` | Account-scoped permission to edit Workers and upload their assets |
+
+Then run:
+
+```sh
+node scripts/deploy-cloudflare.mjs
+```
+
+The helper uploads the static assets, publishes the Worker named in `wrangler.jsonc` (`travel-freely`), enables its `workers.dev` address, and prints the actual URL and deployment result. It preserves existing Worker text secrets. Never put tokens, temporary upload credentials, or provider keys in the repository or browser bundle.
+
+Wrangler is also supported for interactive authentication and deployment:
+
+```sh
+npx wrangler login
+npx wrangler deploy --dry-run
+npx wrangler deploy
+```
+
+Build `dist/` and generate `edge-network.json` first. The optional `node scripts/build-cloudflare.mjs --bundled-assets` prepares a transport fallback for connector environments without asset uploads; normal production deployment uses Static Assets.
+
+After each deployment, verify the printed URL's `/api/health` and perform a real rail search in the UI. Without a flight-provider secret, health should report Skyscanner as `not_configured` and rail as `bundled_timetable`.
+
+## Flight and optional rail secrets
+
+Live flight quotes require a Skyscanner-approved partner key with Flights Live Prices access. No such key is configured by this repository. Flight and operator handoffs remain usable without it.
+
+```sh
+npx wrangler secret put SKYSCANNER_API_KEY
+```
+
+Optional Worker settings are `SKYSCANNER_MARKET` (default `TR`), `SKYSCANNER_LOCALE` (`en-GB`), and `SKYSCANNER_CURRENCY` (`EUR`). Keep EUR for the current euro budget comparison unless the UI's currency handling is extended. Set approved values in the Worker configuration. Local development can use the gitignored `.dev.vars`; production credentials must be stored as Worker secrets.
+
+`RAIL_API_URL` optionally selects an external HTTPS rail backend instead of the bundled timetable:
+
+```sh
+npx wrangler secret put RAIL_API_URL
+```
+
+The Worker calls only that origin's `POST /api/search`. It does not expose the original server's reload route. See [the API contract](docs/CLOUDFLARE.md) before connecting another backend. Bus/metro handoff links are not proof that the backend has their schedules.
+
+## Daily refresh through GitHub Actions
+
+The workflow at [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) has a manual `workflow_dispatch` trigger and a daily **05:30 UTC** schedule. Merge the reviewed changes into the default branch, `master`, and add repository Actions secrets named `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`.
+
+**These GitHub repository secrets are not configured yet.** This workflow is prepared for review; daily production refresh is not active. An interactive deployment through Cloudflare does not automatically configure GitHub Actions.
+
+Run it from `master`. A wrong branch or missing secret produces a failed run with a clear configuration error. A successful run installs locked dependencies, fetches a fresh timetable, runs checks, packages the Worker, deploys it, and checks public health. The workflow has only `contents: read` repository permission and never commits, pushes, or changes the branch. It does not need the flight key in GitHub because the deployed Worker's existing secrets are preserved.
+
+The schedule becomes available after the workflow reaches the default branch; GitHub schedules can be delayed. Check failed or disabled Actions runs. Timetables are bundled at deployment, so a successful ingest without a deployment does not refresh production. Once its calendar expires, the rail API explicitly refuses uncovered dates. [GitHub's schedule behavior](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onschedule)
+
+## Optional original Node rail engine
+
+For the original multi-country engine, provision a separate persistent Node host with several gigabytes of disk and enough ingestion memory. Earlier project measurements are historical snapshots; remeasure the current feeds instead of applying the compact Worker's resource figures to this server. This path does not provide complete European, local-transit, or fare coverage automatically.
+
+On a POSIX host:
+
+```sh
+npm ci
 NODE_OPTIONS=--max-old-space-size=6144 node scripts/ingest.mjs
+HOST=127.0.0.1 PORT=8080 node server.mjs
 ```
 
-The ingest needs the extra heap for Switzerland and takes ~20 minutes on a
-cold cache. It writes `src/data/network.json` **atomically** — to a `.new`
-file, then `rename()` over the target — so a running server never sees a
-half-written file.
+For PowerShell, set `$env:NODE_OPTIONS = '--max-old-space-size=6144'` before running the full ingester. Its use of `unzip` requires the executable on PATH. The resulting `src/data/network.json` is separate from `edge-network.json` and is not shipped in the Worker.
 
-## Running it
+Run `server.mjs` under a process supervisor, bind it to loopback behind a configured TLS reverse proxy, and expose only the search API needed by the Worker. The server's rate limiter uses the socket peer address; configure trusted-proxy handling if per-client limits are required. Do not forward `/api/reload` publicly.
 
-```bash
-HOST=127.0.0.1 PORT=8080 RELOAD_TOKEN=$(openssl rand -hex 16) node server.mjs
-```
+After a successful full ingestion, `SIGHUP` reloads the Node network in place and clears its result cache. On Windows, the alternative is local `POST /api/reload` with `x-reload-token` matching the server's `RELOAD_TOKEN` environment variable. Keep that administration credential out of client code and the public proxy. A failed reload retains the previous in-memory network.
 
-`HOST` defaults to `127.0.0.1` deliberately. Set `0.0.0.0` **only** once a
-reverse proxy fronts it — the process does no TLS and its rate limiter reads
-`req.socket.remoteAddress`, which is the proxy's address once one exists.
-
-As a systemd unit:
-
-```ini
-[Unit]
-Description=Where next — journey search
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=/srv/nightjet
-Environment=HOST=127.0.0.1
-Environment=PORT=8080
-Environment=RELOAD_TOKEN=…
-ExecStart=/usr/bin/node server.mjs
-Restart=always
-RestartSec=5
-# The heap is ~180MB after the typed-array work; 1500MB is generous headroom
-# and still catches a runaway.
-MemoryMax=1500M
-
-[Install]
-WantedBy=multi-user.target
-```
-
-`Restart=always` matters. Two one-request remote kills were found and fixed
-before the first deploy, and the process now catches `uncaughtException` — but
-a supervisor is the difference between a crash and an outage.
-
-## Nightly data
-
-```bash
-#!/bin/sh
-# /etc/cron.daily/nightjet-ingest — timetables change daily at most.
-set -e
-cd /srv/nightjet
-NODE_OPTIONS=--max-old-space-size=6144 node scripts/ingest.mjs
-kill -HUP "$(systemctl show -p MainPID --value nightjet)"
-```
-
-`SIGHUP` reloads the network in place: the replacement is built while the old
-one keeps serving, and the swap is a single assignment, so no request sees a
-partial state. The result cache is cleared with it, because cached journeys
-belong to the old timetable.
-
-**A failed reload is not an outage.** If the new file is missing or corrupt the
-server logs `reload FAILED, keeping the previous network` and carries on
-serving yesterday's data — verified by pointing it at a truncated file: it
-returned HTTP 500 for the reload and kept answering searches.
-
-There is also `POST /api/reload` with an `x-reload-token` header, which does
-the same thing. It exists because Node cannot deliver signals on Windows
-(`kill()` returns `ENOSYS`), so the signal path cannot be tested where this is
-developed. Without `RELOAD_TOKEN` set the route returns 404 — it does not
-advertise itself — and a wrong token gets 404 too.
-
-## Reverse proxy
-
-```nginx
-server {
-  listen 443 ssl http2;
-  server_name example.com;
-
-  location / {
-    proxy_pass http://127.0.0.1:8080;
-    proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-  }
-  # /api/reload is loopback-only by intent. Do not proxy it.
-  location = /api/reload { return 404; }
-}
-```
-
-Once a proxy is in front, the rate limiter's `req.socket.remoteAddress` becomes
-the proxy for every request, so **every visitor shares one bucket**. Switch it
-to the rightmost trusted `X-Forwarded-For` entry at that point —
-`server.mjs` marks the spot. Until then the header is client-controlled and
-trusting it would hand an attacker a fresh identity per request.
-
-## What is already handled
-
-Found and fixed by a pre-deploy audit, so they do not need re-doing:
-
-- Body size capped at 64KB, counted while streaming (a 200MB POST previously
-  added 618MB of RSS).
-- 20 searches/minute per IP, 4 in flight; a burst leaves static assets at 4ms.
-- `departHour` validated and floored, so fractional values cannot mint
-  unlimited cache keys.
-- Malformed `Host` headers and prototype-chain queries (`?q=constructor`) no
-  longer kill the process; both did.
-- Static files read once into memory, hashed assets sent `immutable`.
-- Path containment asserted explicitly rather than by an unreachable regex.
-
-## Legal
-
-`DATA_SOURCES.md` is not optional reading before you put this on a domain. Two
-constraints bind a deployment:
-
-- **SNCF is ODbL**, whose share-alike attaches to a derived *database*.
-  Serving journey results is fine; publishing `src/data/network.json` as a
-  dataset is not, while SNCF is in it.
-- **EU Delegated Regulation 2017/1926 Art. 8(3)** requires the source and
-  last-update time to be shown. The footer does this; do not remove it.
+Review [DATA_SOURCES.md](DATA_SOURCES.md) before publishing results from the full feed mix. In particular, an ODbL-derived database can carry obligations when a public service produces results from it; keeping `network.json` private is not an exemption.

@@ -1,0 +1,85 @@
+name: Refresh timetable and deploy Travel Freely
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 5 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: travel-freely-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Require the reviewed production branch and deployment secrets
+        shell: bash
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/master" ]; then
+            echo "::error::Run this workflow from master after merging the reviewed Travel Freely changes."
+            exit 1
+          fi
+          if [ -z "$CLOUDFLARE_ACCOUNT_ID" ] || [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::error::Configure repository Actions secrets CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN before deploying."
+            exit 1
+          fi
+          if [[ ! "$CLOUDFLARE_ACCOUNT_ID" =~ ^[a-f0-9]{32}$ ]]; then
+            echo "::error::CLOUDFLARE_ACCOUNT_ID must be the 32-character Cloudflare account ID."
+            exit 1
+          fi
+
+      - name: Check out the triggering master commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Verify archive extraction is available
+        run: command -v unzip
+
+      - name: Refresh the publisher timetable
+        run: npm run data:edge -- --force
+
+      - name: Run tests and build the application
+        run: npm run check
+
+      - name: Package Worker and Static Assets
+        run: node scripts/build-cloudflare.mjs
+
+      - name: Deploy to Cloudflare
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: node scripts/deploy-cloudflare.mjs > "$RUNNER_TEMP/travel-freely-deployment.json"
+
+      - name: Verify public service health
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const deployed = JSON.parse(readFileSync(join(process.env.RUNNER_TEMP, 'travel-freely-deployment.json'), 'utf8'));
+          const base = new URL(deployed.url);
+          if (base.protocol !== 'https:' || !base.hostname.endsWith('.workers.dev')) throw new Error('Deployment did not return a valid workers.dev URL.');
+          const response = await fetch(new URL('/api/health', base), { signal: AbortSignal.timeout(30_000) });
+          const health = await response.json();
+          if (!response.ok || health.ok !== true || health.service !== 'Travel Freely') throw new Error('Published Worker health check failed.');
+          if (!health.providers?.some((provider) => provider.id === 'rail' && provider.configured)) throw new Error('Published Worker has no configured rail provider.');
+          console.log(`Verified Travel Freely at ${base.origin}`);
+          NODE

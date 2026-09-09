@@ -1,108 +1,69 @@
-# Where next
+# Travel Freely
 
-**Every way from A to B, drawn on the world.**
+**Find a trip that leaves room in your budget for being there.**
 
-Type two places. Get the real trains between them — ranked by how long they
-take, how many times you change, and whether you can sleep through it — with
-the journey drawn on a 3D globe built from actual geometry.
+[Open the live beta](https://travel-freely.windcrash64.workers.dev/)
 
-It runs on transit data we ingest ourselves from the operators, so a search
-costs compute we already pay for rather than money per request.
+Travel Freely is a student-friendly travel planning beta, built from Nightjet Atlas. It brings flight search handoffs, real train timetables, a globe, and a whole-trip budget into one interface. The React app and its API are designed to run together on Cloudflare Workers with Static Assets.
 
-## What it does
+## What works today
 
-Search Zurich to Hamburg on an evening and you get six real options, including
-`NJ 2870` leaving at 21:59 and arriving 08:11 — ten hours, every one of them
-asleep, no hotel — alongside the seven-hour version that changes once at Basel.
-That comparison is the product. A list of departure times cannot make it; you
-have to see the sleeper next to the fast train to know which one you want.
+- Search cities and airports, choose a date and transport modes, and compare returned journeys by duration, changes, and available prices.
+- Search a bundled Germany long-distance timetable: **656 stations and 5,217 trips** in the September 9, 2026 snapshot. Direct and one-change trains use real service calendars and boarding restrictions. International coverage is limited to services present in that feed.
+- Open flight comparison and operator sites for the selected route. A server-side Skyscanner Live Prices adapter is implemented, but **an approved partner key has not been configured**. Flight handoffs work without that key; live flight quotes do not.
+- Open bus, metro, and rail operator links. These are handoffs, not an integrated end-to-end transit timetable.
+- Plan a budget with your own baggage, transfer, and other cost entries; inspect nearby airports and save plans on this device.
+- See timetable attribution, dates, and coverage limitations alongside results. Unknown prices stay unknown.
 
-- **189,209 stops and 384,515 services** from six feeds covering Germany,
-  France, Spain, Switzerland and the Netherlands.
-- **Reach is wider than those five countries.** A cross-border service carries
-  its foreign stops with it, so routing to Warsaw, Prague, Budapest,
-  Copenhagen, Brussels, Vienna, Milan, Zagreb, Ljubljana and London St Pancras
-  works today.
-- **RAPTOR-style routing over patterns**, not trips. Median cold search 383ms,
-  worst 448ms; repeat searches 33–38ms.
-- **A real globe**, Natural Earth vector geometry — no map tiles, no API key,
-  no third-party request — framed on the journey by computing the chord it
-  subtends.
-- **The list explains itself.** On a corridor where one train runs all day it
-  says so, with the median gap between its departures, rather than showing you
-  eight near-identical rows and letting you wonder what broke.
+Rail durations are station-to-station. Flight durations, when a provider is connected, are airport-to-airport. Ground access, check-in, separate-ticket protection, and complete door-to-door routing are not solved by this beta. The app has no checkout or payment processing and does not sell tickets.
 
-## What it refuses to do
+## Run locally
 
-**It never shows a price, and never estimates one.** Open feeds carry
-schedules, not fares, and there is no free legitimate source of European rail
-prices: Amadeus Self-Service was decommissioned on 2026-07-17, Duffel's terms
-prohibit metasearch, and scraping Google violates its `robots.txt`. `price` is
-`null` everywhere and there is no code path that invents one. A test enforces
-it.
+Use Node.js 24 and `unzip` (Git for Windows supplies it).
 
-**It never claims a feature it does not render.** Badges appear only when they
-change a decision — "Fastest" needs a 15-minute margin over the runner-up,
-because a three-minute win is advice to wait an hour for nothing.
-
-**It shows where its data came from and when.** EU Delegated Regulation
-2017/1926 Art. 8(3) requires the source and last-update time wherever this data
-is reused, and the footer carries both.
-
-## Running it
-
-```bash
-npm install
-node scripts/ingest.mjs   # downloads the feeds, builds src/data/network.json (~98MB, gitignored)
-                          # Switzerland needs headroom: NODE_OPTIONS=--max-old-space-size=6144
-node server.mjs           # routing API on :8080, also serves dist/
-npm run dev               # UI on :5173, proxies /api to :8080
-```
-
-```bash
-npm test                  # 74 tests, no network required
+```sh
+npm ci
+npm run data:edge
 npm run build
-node scripts/bench.mjs    # cold search latency per corridor
+npm run dev:api
 ```
 
-## Deploying
+In a second terminal:
 
-A long-lived Node process on a small VPS. The server holds **451MB resident**
-and spends 3.9s building its index at startup, so it wants a box it can stay
-warm on — not Cloudflare Workers (128MB), not a Lambda cold start per request.
-A 1GB VPS is enough.
+```sh
+npm run dev
+```
 
-That number is load-bearing and was measured, not estimated. It used to be
-1.4GB: the network is millions of small arrays, and as plain JavaScript objects
-each `[stop, arrive, depart]` triple cost more in object header than the twelve
-bytes inside it. The hot structures — 3.2M stop-times, 3.6M footpaths, 3.2M
-stop→service entries — are now CSR typed-array columns, which took heap from
-1,205MB to 176MB and halved search latency. The column widths are asserted by
-tests in `src/lib/calls.test.js`, because the hosting decision depends on them.
+Vite serves the UI on port 5173 and proxies `/api` to the local Worker on port 8787. The initial build supplies the Worker's Static Assets directory. Re-run `npm run data:edge` to refresh the generated timetable; no large multi-country download is needed for this path.
 
-## Data and licences
+```sh
+npm run check
+```
 
-Six feeds, all fetched from the publishers directly. Read
-[DATA_SOURCES.md](DATA_SOURCES.md) and `data/sources/registry.json` before
-deploying: they record every source, its licence, its attribution requirement,
-and — as importantly — the sources investigated and rejected, with reasons.
+This runs the application tests, Worker tests, and production UI build. Provider HTTP tests use fixtures; passing them does not establish that a flight-provider account is approved or connected.
 
-| Feed | Licence |
-|---|---|
-| Germany long-distance, Germany regional, Spain (Renfe) | CC-BY-4.0 |
-| Netherlands | CC0-1.0 |
-| Switzerland | opentransportdata.swiss terms of use |
-| France (SNCF) | ODbL-1.0 |
+## Publish and maintain
 
-Two constraints worth knowing before you touch this:
+See [DEPLOY.md](DEPLOY.md) for Cloudflare deployment, secrets, daily timetable refresh, and the optional original Node server. The production packaging and deployment helpers are:
 
-- **SNCF is ODbL**, whose share-alike attaches to a derived *database*. Keep
-  `src/data/network.json` unpublished as a dataset while SNCF is in it.
-- **Nothing here depends on `api.transitous.org`**, and nothing should. Its
-  terms prohibit commercial use and require consuming projects be open source.
-  Its feed *catalogue* is CC0 and was legitimate to read as a map of
-  publishers.
+```sh
+node scripts/build-cloudflare.mjs
+node scripts/deploy-cloudflare.mjs
+```
 
-The code is MIT. Geometry from [Natural Earth](https://www.naturalearthdata.com/)
-(public domain) via world-atlas. Airport data from
-[OurAirports](https://ourairports.com/data/) (public domain).
+The deployment helper needs `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` in its environment. It prints the actual public URL after a successful deployment. The live beta above was published and verified on September 9, 2026.
+
+The [GitHub Actions workflow](.github/workflows/deploy.yml) supports manual deployment and a daily 05:30 UTC timetable refresh after it is merged into `master` and its two Cloudflare repository secrets are configured. **Those GitHub secrets are not configured yet; scheduled production refresh is not active.** Missing credentials fail clearly. The workflow does not commit generated data or change branches.
+
+## Data and architecture
+
+The hosted beta bundles only the small DELFI / gtfs.de long-distance feed under CC BY 4.0. Its initial calendar spans **September 5–October 5, 2026**; subsequent ingests use the publisher's actual coverage. Out-of-range searches are refused. Train fares are unavailable in this feed; a connected flight provider can supply real quotes.
+
+The original `scripts/ingest.mjs`, `server.mjs`, and RAPTOR-style rail engine remain available for an optional separately hosted multi-country backend. That much larger dataset is not the Cloudflare beta's coverage. Review its source licenses and size the host before enabling it.
+
+- [Cloudflare API and provider contract](docs/CLOUDFLARE.md)
+- [Bundled rail data, refresh, and validation](docs/EDGE-DATA.md)
+- [Data sources and licenses](DATA_SOURCES.md)
+- [Developer handoff](HANDOFF.md)
+
+Code: MIT. Map geometry: [Natural Earth](https://www.naturalearthdata.com/), public domain via world-atlas. Airport reference data: [OurAirports](https://ourairports.com/data/), public domain. Data-provider licenses remain separate from the code license.

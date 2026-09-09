@@ -4,18 +4,25 @@
   "private": true,
   "type": "module",
   "license": "MIT",
-  "description": "A journey planner that draws the night. Real European night trains and door-to-door multimodal routing on open transit data.",
+  "description": "Student-friendly travel planning with real rail timetables, flight handoffs, an interactive map, and whole-trip budgeting.",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "test": "node --test src/**/*.test.js",
     "data:airports": "node scripts/build-airports.mjs",
-    "check": "npm run test && npm run build"
+    "check": "npm test && npm run test:worker && npm run build",
+    "dev:api": "wrangler dev --port 8787",
+    "deploy": "npm run build && wrangler deploy",
+    "data:edge": "node scripts/ingest-edge.mjs",
+    "test:worker": "node --test worker/*.test.js"
   },
   "dependencies": {
+    "@fontsource-variable/dm-sans": "^5.3.0",
+    "@fontsource-variable/manrope": "^5.3.0",
     "@react-three/drei": "^10.7.8",
     "@react-three/fiber": "^9.7.0",
+    "d3-geo": "^3.1.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "three": "^0.185.1",
@@ -24,6 +31,10 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
-    "vite": "^6.0.0"
+    "vite": "^6.0.0",
+    "wrangler": "^4.130.0"
+  },
+  "overrides": {
+    "sharp": "^0.35.4"
   }
 }

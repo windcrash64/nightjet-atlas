@@ -1,161 +1,60 @@
-# Handoff
+# Travel Freely developer handoff
 
-**Repo:** https://github.com/windcrash64/nightjet-atlas (public, MIT)
-**Local:** `C:/Users/nalba/Documents/nightjet`
-**Last worked:** 2026-09-01
+Repository: [windcrash64/nightjet-atlas](https://github.com/windcrash64/nightjet-atlas). Updated September 9, 2026. Current implementation work is on `codex/travel-freely`; the default branch is `master`. The branch is intended for review before merge. The [live beta](https://travel-freely.windcrash64.workers.dev/) is deployed to Cloudflare; the source branch has not been merged.
 
-## What this is
+## Current product
 
-A journey planner that answers "how do I actually get from A to B", showing
-real options on a real map and ranking them by time, changes, and whether you
-can sleep through it. It runs on transit data we ingest ourselves from the
-operators, so a search costs compute we already pay for rather than money per
-request.
+Travel Freely is a flight-first travel planning beta with an interactive globe, city/airport search, mode choices, journey comparison, operator handoffs, device-local saved plans, and a budget that separates known fares from user-entered extras. The UI must describe airport-to-airport and station-to-station durations honestly. It is not a complete door-to-door booking service.
 
-## Run it
+| Area | Implemented state |
+| --- | --- |
+| Cloudflare | Published Worker API plus Static Assets; public UI and real rail search verified on September 9, 2026 |
+| Scheduled refresh | Workflow prepared; GitHub Cloudflare secrets not configured and daily production refresh not active |
+| Rail | Bundled Germany long-distance GTFS; 656 stations / 5,217 trips in the current snapshot; direct and one-change routes |
+| Flights | Skyscanner create/poll adapter implemented; approved partner key not configured; live inventory integration still needs that account and a real provider test |
+| Flight/operator handoffs | Links usable without a flight API key; external sites remain responsible for quotes and checkout |
+| Bus and metro | Operator/local-transit handoffs; no complete integrated schedules or end-to-end connections |
+| Budget | User-entered extras and available quoted fares; unknown fares do not become zero-cost trips |
+| Saved plans | Browser localStorage on this device; no account or server-side saved-trip database |
+| Payments | No checkout, payment collection, or automatic booking |
 
-```bash
-npm install
-node scripts/ingest.mjs   # downloads the feeds, builds src/data/network.json (~103MB, gitignored)
-                          # Switzerland needs headroom: NODE_OPTIONS=--max-old-space-size=6144
-node server.mjs           # routing API on :8080
-npm run dev               # UI on :5173, proxies /api to :8080
+The initial bundled calendar covers September 5–October 5, 2026. Refresh and redeploy before expiry. An empty rail result means no direct/one-change route in this feed, not that travel is impossible. Price is null for these timetable results; approved live flight results can contain real prices for all selected adults.
+
+## Start and check
+
+```sh
+npm ci
+npm run data:edge
+npm run build
+npm run dev:api
 ```
 
-```bash
-npm test              # 98 tests
-node scripts/bench.mjs  # cold search latency per corridor
-```
+Start `npm run dev` in another terminal. Vite on 5173 proxies the Worker's `/api` on 8787. `npm run check` runs application tests, Worker tests, and the UI production build. Real bundled rail tests need the generated edge data; live flight API tests are separate from the mocked provider tests.
 
-## State
+## Files to know
 
-**Working, verified against real timetables:**
+- `src/App.jsx` and `src/styles.css`: product UI, accessible interactions, budget and saved-plan flows.
+- `src/lib/planner.js`: city/airport lookup, provider handoffs, comparison and budget helpers.
+- `worker/index.js`: same-origin `/api/plan`, input validation, rate limiting, provider isolation, health.
+- `worker/providers.js`: Skyscanner quotes/polling and normalized rail results.
+- `worker/edge-rail.js`, `scripts/ingest-edge.mjs`: compact timetable, real calendars, stop permissions, precomputed indexes initialized at module startup.
+- `wrangler.jsonc`: Worker name, Static Assets, API routing and search rate-limit binding.
+- `scripts/build-cloudflare.mjs`, `scripts/deploy-cloudflare.mjs`: checked-size deployment packages and account-token publication.
+- `.github/workflows/deploy.yml`: manual and daily 05:30 UTC refresh/deploy, activated after merge to `master` and Actions secret configuration.
+- `scripts/ingest.mjs`, `server.mjs`, `src/lib/router.js`: optional original multi-country Node engine, not the current bundled coverage.
 
-- 189,209 stops and 384,515 services from six commercially-licensed feeds
-  covering Germany, France, Spain, Switzerland and the Netherlands (see
-  `data/sources/registry.json`).
-- **Reach is wider than the ingested countries**, because a cross-border
-  service carries its foreign stops with it. Verified routing to Warsaw,
-  Prague, Budapest, Copenhagen, Brussels, Vienna, Milan, Zagreb, Ljubljana and
-  London St Pancras.
-- RAPTOR-style routing over patterns rather than trips. Median cold search
-  **273ms**, worst 546ms, measured by `scripts/bench.mjs`. Warm (cached)
-  searches return in 33–40ms.
-- **Searches are filtered to the day you ask for**, defaulting to today. Only
-  117,470 of 384,515 services run on a given date (103,621 on a Sunday), so
-  three quarters of what the app used to offer was not actually running.
-- **The server holds 451MB resident**, measured on the running process. The
-  hot structures — 3.2M stop-times, 3.6M footpaths, 3.2M stop→service entries
-  — are CSR typed-array columns rather than millions of small JS arrays, which
-  is what took heap from 1,205MB to 176MB and halved search latency. Widths
-  are asserted by tests in `src/lib/calls.test.js`, because the deployment
-  maths depends on them.
-- Real 3D globe (Natural Earth vector geometry, no map tiles, no keys), framed
-  on the journey by computing the chord it subtends.
-- Spot-checked against reality: Madrid–Barcelona 197min on AVE (real ~2h30),
-  Paris–Marseille 184min TGV (real ~3h), Zurich–Milan 197min direct EC (real
-  ~3h20), Zurich–Geneva 170min IC1, Amsterdam–Rotterdam 43min,
-  Berlin–Munich 247min ICE 29, Amsterdam–Berlin 371min, Paris–Brussels 82min
-  Eurostar (real ~1h22), Paris–London 217min, Berlin–Prague 250min (~4h),
-  Berlin–Warszawa 330min, Vienna–Budapest 275min RJX.
-- 98 tests: 21 on the router, 13 on place search, 12 against the real ingested
-  network, 17 on the GTFS calendar, 15 on how the option list describes itself,
-  9 on the packed stop-time columns, plus solar position. Every place-search
-  test names a bug that actually shipped.
+## Validation and operating limits
 
-**Deliberately absent:** prices. Open feeds carry schedules, not fares, and
-there is no free legitimate source of European rail prices. `price` is `null`
-everywhere, enforced by a test.
+The compact rail work independently verified 161,727 service/calendar bits against the raw weekly calendar and exceptions, all 52,878 packed calls, and 241 train legs across 176 returned journeys. Exact source times, pickup/drop-off permissions, calendar bounds, trip identities, and null fares were checked. Node measurements are documented in [EDGE-DATA.md](docs/EDGE-DATA.md); they are not a replacement for Cloudflare runtime measurements.
 
-## Known gaps
+The API rejects malformed/oversized requests and uncovered rail dates. Provider failures are reported independently, so an unavailable flight provider does not remove valid rail results. Booking links retain provider attribution and completeness; multi-ticket quotes must not be presented as a single protected booking. Neither scheduled times nor a health response guarantee running status or inventory.
 
-- **Not deployed, but ready to be.** See [DEPLOY.md](DEPLOY.md): 451MB
-  resident (a 1GB VPS is enough; it was 1.4GB before the typed-array work),
-  ~6GB disk of which 452MB is the feed cache, plus a systemd unit and a cron
-  script. The nightly cycle is safe — the ingest writes network.json
-  atomically and the server reloads in place on SIGHUP or POST /api/reload, so
-  there is no restart and no dropped request, and a corrupt file leaves
-  yesterday's data serving. Still not Cloudflare Pages or Workers (128MB), and
-  still not Lambda-shaped: the 6s index build wants a long-lived process. What
-  is left is buying the box and pointing a domain at it. The old
-  nightjet-atlas.pages.dev deployment is still live and shows an older app.
-- **No payments.** Decided deliberately: build the product first, monetise with
-  evidence. See the research summary below.
-- **Coverage stops at five countries — but that reads worse than it is.** Ten
-  feeds are excluded and only ONE publisher has actually refused (Transitous).
-  The rest break down as: three `unconfirmed` (Belgium, Denmark, Sweden — the
-  licence page would not load, which is an availability gap, not a decision),
-  one `claimed` (Poland), one `permitted` but blocked technically (Czechia),
-  one `permitted-with-condition` (DELFI realtime, whose share-alike would
-  reach the other feeds), and three that are unreachable, not-ingestible or
-  out of scope (Austria, Italy, German local transit). Every entry
-  in `data/sources/registry.json` now carries this status explicitly, because
-  a flat exclusion list made the project look far more blocked than it is.
+## Remaining external setup
 
-  **Denmark is the highest-leverage of the ten.** Copenhagen is the only
-  unserved capital in reach — zero services today, against Prague 166, Vienna
-  183 and Budapest 34, which cross-border trains already cover. The endpoint
-  is live and the archive is valid, so nothing technical stands in the way:
-  one email to Rejseplanen, asking specifically about redistributing
-  cross-border services (DSB is agency 203 carrying IC/ICL/RE plus
-  international RJ and ECE) in a commercial planner, decides it.
+1. Merge the reviewed branch into `master` and configure GitHub Actions secrets `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` if daily production refresh is wanted. The workflow fails clearly when either is missing and cannot deploy from another branch.
+2. Obtain and configure an approved `SKYSCANNER_API_KEY` in Cloudflare, then verify actual live quotes, baggage disclosures and booking handoffs. Installing Cloudflare or supplying a Cloudflare token does not grant flight-data access.
+3. Expand transport coverage through explicitly licensed sources and actual provider contracts. Local transit, real airport access, more transfers, cross-day connections, accessibility and rail fares remain separate integration work.
 
-  Italy is NeTEx-only and Austria's host refuses connections. Czechia and
-  Poland were researched on 2026-09-01 and the answer was not the expected one
-  — see `docs/research/cz-pl-rail-feeds-2026-09.md`:
-  - **Poland is excluded on licence grounds.** No official rail GTFS exists;
-    PKP is not even registered as a data provider on dane.gov.pl. The one
-    official source is JSON behind manual approval, marked "all rights
-    reserved". The CC-BY-4.0 on the volunteer rehost traces to no PKP grant.
-  - **Czechia is viable and deferred.** Its licence is the best we have found
-    anywhere (the state disclaims copyright, database copyright and sui
-    generis right, with a CC0 match), but it publishes NeTEx and CZPTT XML
-    only. Adding it is a converter project, not an ingest config change.
-- **Times are agency-local, and every country ingested is on CET**, so they are
-  directly comparable today. The ingester fails loudly if a feed from another
-  offset is added, because journeys crossing that boundary would be silently
-  hours wrong.
-- **The 4,132-airport dataset is bundled but unused.** No flight routing yet.
+The optional `RAIL_API_URL` can connect a separately hosted Node search engine. Review its date behavior, resource needs, source licenses, and public-service obligations before using the larger feed mix. The old full-network measurements and research in `docs/research/` describe earlier investigation; they are not current hosted coverage or proof of a provider's present terms.
 
-- **A sparse corridor can honestly return nothing.** The empty state now says
-  so and offers "leave earlier" / "try the next day" rather than blaming
-  coverage, but there is no "next departure after this window" search — if the
-  only train is at 06:00 tomorrow, nothing tells you that.
-
-## What the research established
-
-Two workflows (39 and 25 agents) with adversarial verification. The load-bearing
-conclusions:
-
-- **The commercial path is legal and clear.** MOTIS is MIT with no restriction.
-  ÖBB's own terms permit `kommerziell nutzen`. EU Delegated Regulation
-  2017/1926 Art. 8(1) obliges member states to publish this data for reuse on a
-  non-discriminatory basis, and Art. 8(4) caps how restrictive their licences
-  may be. Art. 8(3) separately requires showing the source and last-update time
-  — which the app does.
-- **Transitous is off-limits commercially** ("commercial use is not allowed",
-  plus an open-source requirement), which is why nothing here depends on it.
-  Their feed *catalogue* is CC0 and was used as a map of publishers.
-- **There is no free flight-price API in 2026.** Amadeus Self-Service was
-  decommissioned 2026-07-17; Duffel's terms ban metasearch; scraping Google
-  violates its robots.txt.
-- **Paid subscriptions have failed in this niche.** fromAtoB had 2.5M monthly
-  visitors, funding, and the right to sell tickets, and went insolvent.
-  bahn.guru is archived. Eurail deleted its own web trip planner in May 2026.
-  The survivors — Chronotrains, Seat61 — are free and ad/affiliate/donation
-  funded. Rail affiliate commission is thin: Rail Europe 0.91%, Trainline ~3%.
-- **Feed operations are the real cost, not servers.** Transitous logs roughly
-  five feed breakages a week with experienced maintainers and donated hardware.
-
-## Next, in the order I would do it
-
-1. Deploy: small VPS, nightly ingest, a real domain. Nothing else matters
-   until someone other than us can load it.
-2. Czechia, if coverage is worth a NeTEx→GTFS converter. Not Poland — its
-   licence question is closed for now, and reopening it means asking PKP PLK
-   directly rather than searching again.
-3. Only then revisit money, with usage data rather than a guess.
-
-(Local-vs-UTC times came off this list: times are agency-local, every ingested
-country is on CET, and the ingester fails loudly if a feed from another offset
-is added.)
+See [DEPLOY.md](DEPLOY.md), [DATA_SOURCES.md](DATA_SOURCES.md), and [the provider/API reference](docs/CLOUDFLARE.md) for the concrete setup. Do not commit credentials, generated networks, or temporary Cloudflare upload tokens.
