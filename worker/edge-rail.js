@@ -165,9 +165,10 @@ function searchTimetable(input = {}, timetable) {
     const departMin = index.calls.departAt(si, board);
     const arriveMin = index.calls.arriveAt(nextSi < 0 ? si : nextSi, nextSi < 0 ? alight : nextAlight);
     const durationMin = arriveMin - departMin;
-    // Numeric positions are unambiguous even when publisher trip IDs contain
-    // punctuation used by a textual separator.
-    const key = `${si}:${nextSi}`;
+    // The next-trip slot spans 0..serviceCount: direct -1 maps to 0. A stride
+    // of serviceCount + 1 makes each pair unique without allocating a string;
+    // the ingest trip cap keeps the integer exactly representable.
+    const key = si * (network.services.length + 1) + nextSi + 1;
     const previous = results.get(key);
     // Multiple interchange stops and city stations can produce the same train
     // combination. Reject equal/slower copies before allocating legs and lists.
