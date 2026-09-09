@@ -6,7 +6,7 @@
 
 Travel Freely is a student-friendly travel planning beta, built from Nightjet Atlas. It brings flight search handoffs, real train timetables, a globe, and a whole-trip budget into one interface. The React app and its API are designed to run together on Cloudflare Workers with Static Assets.
 
-The public beta is the previously verified September 9 deployment. The follow-up improvements described below are implemented on `codex/travel-freely` for the existing draft pull request; **this follow-up has not been deployed**.
+The current interface and streaming backend were deployed and verified on September 9, 2026. Source changes are on `codex/travel-freely` in [draft PR #1](https://github.com/windcrash64/nightjet-atlas/pull/1); the branch has not been merged into `master`.
 
 ## Current implementation
 
@@ -65,7 +65,7 @@ node scripts/deploy-cloudflare.mjs deploy
 
 `npm run deploy` runs checks, creates the package, publishes it, and verifies public assets and API behavior. Packaging rebuilds the UI, requires tomorrow in UTC to be within the timetable calendar, and rejects source retrieval timestamps older than seven days. Package hashes and source fingerprints prevent publishing changed files under an older build. Running the deployment helper without a command only prints help.
 
-Publishing needs `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` in its environment. It records the previous Worker versions in a non-secret receipt before publication, then verifies the new public build. If verification fails after publication, inspect that receipt and follow the explicit rollback procedure in [DEPLOY.md](DEPLOY.md); rerunning the command is not a rollback. The live beta above remains the earlier verified deployment.
+Publishing needs `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` in its environment. It records the previous Worker versions in a non-secret receipt before publication, then verifies the new public build. If verification fails after publication, inspect that receipt and follow the explicit rollback procedure in [DEPLOY.md](DEPLOY.md); rerunning the command is not a rollback. The live beta passed public asset, build identity, API, streaming and browser checks. Clean GitHub CI passed all checks; 201 tests passed locally, with 15 optional legacy full-network tests skipped.
 
 The [GitHub Actions workflow](.github/workflows/deploy.yml) supports manual deployment and a daily 05:30 UTC timetable refresh after it is merged into `master` and its two Cloudflare repository secrets are configured. **Those GitHub secrets are not configured yet; scheduled production refresh is not active.** Missing credentials fail clearly. The workflow does not commit generated data or change branches.
 

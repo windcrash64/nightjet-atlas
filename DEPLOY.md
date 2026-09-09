@@ -4,6 +4,8 @@ The default deployment is one Cloudflare Worker with Static Assets: the React ap
 
 Current beta: [travel-freely.windcrash64.workers.dev](https://travel-freely.windcrash64.workers.dev/), published and checked on September 9, 2026. The public UI and API returned eight real Berlin–Munich timetable options for September 10; the fastest took 239 minutes.
 
+The final verified deployment is `ea34d486-5954-4434-96d6-27752443d66e`. All sampled searches succeeded, but CPU ranged from 8-20 ms in the initial route sample and some requests exceed the nominal 10-ms free allowance; see [current measurements](docs/EDGE-DATA.md#latest-production-verification). Live flight access and scheduled refresh credentials remain separate setup.
+
 ## Build and verify
 
 Use Node.js 24 and npm. Compact ingestion reads ZIP files directly; it does not require `unzip`. From the repository root:

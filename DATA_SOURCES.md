@@ -2,7 +2,7 @@
 
 The repository's MIT license covers its code. Each dataset and connected provider retains its own license or agreement. This document distinguishes the current Cloudflare beta from the optional original multi-country engine; inclusion in the registry does not mean a source is bundled in production.
 
-The public beta remains the previously verified September 9 deployment. The ingestion, validation and handoff improvements described here are implemented in the existing draft pull request on `codex/travel-freely` and have not yet been deployed.
+The public beta includes the ingestion, validation and handoff improvements described here, deployed and verified September 9, 2026. Source changes remain in the existing draft pull request on `codex/travel-freely`; they have not been merged into `master`.
 
 ## Current Cloudflare beta
 
