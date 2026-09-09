@@ -51,10 +51,10 @@ Measured on **2026-09-09** using the publisher archive last modified **2026-09-0
 | Rejected malformed trips | 0 |
 | Network with precomputed lookup tables | 3,640,266 bytes |
 | Network gzip | 660,368 bytes |
-| Deployed Worker startup | 15 ms |
-| Deployed first Berlin–Munich request CPU | 19 ms; outcome `ok` |
-| Deployed repeat Berlin–Munich / reverse route CPU | 8 / 8 ms; outcomes `ok` |
-| Deployed Hamburg–Frankfurt request CPU | 21 ms; outcome `ok` |
+| Deployed Worker startup | 20 ms |
+| Deployed first Berlin–Munich request CPU | 12 ms; outcome `ok` |
+| Deployed repeat Berlin–Munich / reverse route CPU | 8 / 5 ms; outcomes `ok` |
+| Deployed Hamburg–Frankfurt request CPU | 9 ms; outcome `ok` |
 | Local median first request, before → after initialization change | 12.61 → 11.89 ms wall time |
 | Local median module import, before → after | 29.49 → 30.16 ms wall time |
 | Local median warm request, before → after | 3.96 → 4.16 ms wall time |
@@ -63,9 +63,11 @@ Measured on **2026-09-09** using the publisher archive last modified **2026-09-0
 
 The ingester computes immutable stop/departure lists and packed-column values at build time. The Worker imports the JSON as bundled data and hydrates its typed arrays once during module initialization. Requests read this prepared timetable; hydration no longer consumes the first search's request CPU allowance. This startup work performs no network call or filesystem read and stores no traveller/request data globally. Unneeded JSON copies are released after initialization.
 
-The production measurements above were captured on deployment `63e0bcc676a345a1a86d79c67b19b6d8`. All observed requests succeeded without exceptions, but some searches exceeded the nominal free-plan CPU allowance. Moving static hydration into the startup budget reduced the first measured route from 23 to 19 ms; it did not establish a sub-10-ms guarantee. No paid-plan upgrade was performed.
+The production measurements above were captured on deployment `fb44f9a6b870465d9392b24ecd3336b2`. All observed requests succeeded without exceptions. Warm and other measured routes used 5–9 ms CPU, while the first search used 12 ms and still exceeded the nominal 10-ms free allowance. The optimization reduced the earlier 23-ms cold search and 21-ms Hamburg–Frankfurt measurement, but does not guarantee every route stays below that allowance. No paid-plan upgrade was performed; monitor platform CPU before increasing traffic or coverage.
 
-The local comparison alternated six fresh Node processes per version and searched Berlin–Munich, Hamburg–Cologne, and Berlin–Hamburg on September 10. All three returned eight journeys, and the complete response hashes matched before and after the change. Wall timings were noisy and show only a small local improvement; they are not Cloudflare CPU measurements. All 21 Worker tests passed after the initialization change.
+The local initialization comparison alternated six fresh Node processes per version and searched Berlin–Munich, Hamburg–Cologne, and Berlin–Hamburg on September 10. All three returned eight journeys, and the complete response hashes matched before and after the change. These wall timings are not Cloudflare CPU measurements.
+
+The route optimizer builds transfer lists only from trains serving the destination, removes dominated candidates with an O(n log n) scan, and creates full journey objects only for the final eight choices. Hamburg–Frankfurt previously constructed 3,172 full objects to retain 741 train combinations; it now constructs eight. An interleaved Node benchmark reduced its warm median from 3.30 to 2.14 ms over 24 samples per version. Exact response comparisons across 228 route/date/hour queries preserved all 999 journeys, including three sleepers. All 23 Worker tests pass, including strict dominance-boundary and generated-timetable regressions.
 
 The packaged Worker must be checked on deployment: the network gzip measurement excludes other application code, and Node timings are not Cloudflare CPU measurements. Cloudflare currently documents a [3 MiB compressed free bundle, 128 MB isolate memory, 10 ms free request CPU, and 1-second startup limit](https://developers.cloudflare.com/workers/platform/limits/). A free Worker can still reach its CPU limit on cold or unusually expensive searches; verify startup and request CPU for the updated production version before widening coverage. Ingestion refuses a network above 2 MiB gzip so the rest of the Worker has headroom.
 

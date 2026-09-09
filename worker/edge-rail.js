@@ -60,6 +60,18 @@ function journey(legs) {
   };
 }
 
+function materializeJourney({ si, board, alight, nextSi, nextBoard, nextAlight, walkMin }) {
+  const { index } = timetable;
+  const firstLeg = leg(index, si, board, alight);
+  const legs = [firstLeg];
+  if (nextSi >= 0) {
+    const lastLeg = leg(index, nextSi, nextBoard, nextAlight);
+    if (walkMin) legs.push({ mode: 'walk', service: null, operator: null, from: firstLeg.to, to: lastLeg.from, departMin: firstLeg.arriveMin, arriveMin: firstLeg.arriveMin + walkMin, price: null });
+    legs.push(lastLeg);
+  }
+  return journey(legs);
+}
+
 function lowerBound(list, time) {
   let lo = 0, hi = list.length;
   while (lo < hi) {
@@ -68,6 +80,22 @@ function lowerBound(list, time) {
     else hi = mid;
   }
   return lo;
+}
+
+/** Preserve insertion order while removing dominated direct/one-change trips. */
+export function pruneDominatedJourneys(found) {
+  // A later departure with an arrival over an hour earlier dominates a trip
+  // only when it has no more transfers. Scan latest departures first, with
+  // earliest arrival first for ties, tracking direct and at-most-one-change
+  // arrival minima. This preserves the old pairwise predicate in O(n log n).
+  const dominated = new Set();
+  let directArrival = Infinity, anyArrival = Infinity;
+  for (const j of [...found].sort((a, b) => b.departMin - a.departMin || a.arriveMin - b.arriveMin)) {
+    if ((j.transfers === 0 ? directArrival : anyArrival) + 60 < j.arriveMin) dominated.add(j);
+    if (j.transfers === 0) directArrival = Math.min(directArrival, j.arriveMin);
+    anyArrival = Math.min(anyArrival, j.arriveMin);
+  }
+  return found.filter((j) => !dominated.has(j));
 }
 
 /** Real direct and one-change rail journeys, with GTFS boarding permissions.
@@ -108,16 +136,36 @@ export function edgeRailSearch(input = {}) {
     }
   }
   for (const calls of destinationCalls.values()) calls.sort((a, b) => a - b);
-  // Filter once instead of walking every unrelated train for every possible
-  // transfer. This keeps warm requests within the small edge CPU budget.
-  const connections = boardings.map((list) => list.filter(([si]) => active[si] && destinationCalls.has(si)));
+  // Only trains that actually reach a destination can form the second ride.
+  // Building from those trips avoids filtering every boarding in the network.
+  const connections = Array.from({ length: network.stops.length }, () => []);
+  for (const [si, destinations] of destinationCalls) {
+    const permissions = network.services[si].p;
+    for (let ci = 0; ci < destinations.at(-1); ci++) {
+      if (!(permissions[ci] & 1)) continue;
+      connections[index.calls.stopAt(si, ci)].push([si, ci, index.calls.departAt(si, ci)]);
+    }
+  }
+  // The original boarding lists were appended in service/call order before a
+  // stable departure sort. Preserve that order even at equal departure times.
+  for (const list of connections) list.sort((a, b) => a[2] - b[2] || a[0] - b[0] || a[1] - b[1]);
   const firstDestination = (si, board) => destinationCalls.get(si)?.find((ci) => ci > board);
   const results = new Map();
-  const add = (legs) => {
-    const result = journey(legs);
-    const key = result.legs.filter((l) => l.mode !== 'walk').map((l) => l.serviceId).join('|');
+  const add = (si, board, alight, nextSi = -1, nextBoard = -1, nextAlight = -1, walkMin = 0) => {
+    const departMin = index.calls.departAt(si, board);
+    const arriveMin = index.calls.arriveAt(nextSi < 0 ? si : nextSi, nextSi < 0 ? alight : nextAlight);
+    const durationMin = arriveMin - departMin;
+    const key = network.services[si].i + (nextSi < 0 ? '' : `|${network.services[nextSi].i}`);
     const previous = results.get(key);
-    if (result.durationMin > 0 && result.durationMin <= 30 * 60 && (!previous || result.durationMin < previous.durationMin)) results.set(key, result);
+    // Multiple interchange stops and city stations can produce the same train
+    // combination. Reject equal/slower copies before allocating legs and lists.
+    if (durationMin <= 0 || durationMin > 30 * 60 || (previous && durationMin >= previous.durationMin)) return;
+    const sleeperMin = (network.services[si].m === 'night_rail' ? index.calls.arriveAt(si, alight) - departMin : 0)
+      + (nextSi >= 0 && network.services[nextSi].m === 'night_rail' ? arriveMin - index.calls.departAt(nextSi, nextBoard) : 0);
+    // Ranking needs only these scalars and call positions. Materialize complete
+    // passenger-facing legs for the final choices, not every candidate.
+    results.set(key, { si, board, alight, nextSi, nextBoard, nextAlight, walkMin,
+      departMin, arriveMin, durationMin, transfers: nextSi < 0 ? 0 : 1, hasSleeper: sleeperMin > 0 });
   };
   const visitedBoardings = new Set();
   for (const origin of origins) {
@@ -128,7 +176,7 @@ export function edgeRailSearch(input = {}) {
       if (!active[si] || visitedBoardings.has(`${si}:${ci}`)) continue;
       visitedBoardings.add(`${si}:${ci}`);
       const direct = firstDestination(si, ci);
-      if (direct !== undefined) { add([leg(index, si, ci, direct)]); continue; }
+      if (direct !== undefined) { add(si, ci, direct); continue; }
       // Look for one change at each permissible arrival. The GTFS service-day
       // minute values, including >24:00, are retained without fabricated times.
       for (let transferCall = ci + 1; transferCall < index.calls.count(si); transferCall++) {
@@ -145,19 +193,16 @@ export function edgeRailSearch(input = {}) {
             if (nextSi === si || !active[nextSi]) continue;
             const destination = firstDestination(nextSi, nextCi);
             if (destination === undefined) continue;
-            const firstLeg = leg(index, si, ci, transferCall);
-            const lastLeg = leg(index, nextSi, nextCi, destination);
-            const legs = [firstLeg];
-            if (walkMin) legs.push({ mode: 'walk', service: null, operator: null, from: firstLeg.to, to: lastLeg.from, departMin: arrival, arriveMin: arrival + walkMin, price: null });
-            legs.push(lastLeg);
-            add(legs);
+            add(si, ci, transferCall, nextSi, nextCi, destination, walkMin);
           }
         }
       }
     }
   }
   const found = [...results.values()];
-  const candidates = found.filter((j) => !found.some((p) => p !== j && p.departMin >= j.departMin && p.arriveMin + 60 < j.arriveMin && p.transfers <= j.transfers))
+  // Filter the original insertion order so stable-sort ties and displayed
+  // ordering remain unchanged.
+  const candidates = pruneDominatedJourneys(found)
     .sort((a, b) => a.durationMin - b.durationMin || a.transfers - b.transfers || a.departMin - b.departMin);
   // Keep useful alternatives across the day without dozens of near-identical
   // connection combinations. The API never calls this an exhaustive search.
@@ -172,5 +217,5 @@ export function edgeRailSearch(input = {}) {
     if (selected.some((p) => Math.abs(p.departMin - j.departMin) < 25 && p.durationMin <= j.durationMin && p.transfers <= j.transfers)) continue;
     take(j);
   }
-  return { ...base, journeys: selected.sort((a, b) => a.departMin - b.departMin), ...(!selected.length ? { coverage: 'No direct or one-change train found for this route and date in this feed. Other operators or routes may exist.' } : {}) };
+  return { ...base, journeys: selected.sort((a, b) => a.departMin - b.departMin).map(materializeJourney), ...(!selected.length ? { coverage: 'No direct or one-change train found for this route and date in this feed. Other operators or routes may exist.' } : {}) };
 }

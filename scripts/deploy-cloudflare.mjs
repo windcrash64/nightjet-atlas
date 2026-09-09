@@ -4,6 +4,8 @@
  * `upload-assets` reads one JSON line {accountId,jwt,buckets} from stdin, writes one
  * JSON line {jwt} for the caller to capture (a short-lived completion credential).
  * `connector-package` emits code + metadata WITHOUT credentials for tool orchestration.
+ * `verify URL [YYYY-MM-DD]` checks tomorrow in UTC unless a fixture date is supplied.
+ * `verify-tail` accepts {url,tailUrl,date?}; its date follows the same convention.
  * Never save either JWT output to a repository file or display it to the traveler.
  */
 import { readFileSync } from 'node:fs';
@@ -109,9 +111,48 @@ export async function readInputLine() {
   }
 }
 
-export async function verifyDeployment(url) {
+const DAY_MS = 86_400_000;
+
+function isoDateEpoch(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const epoch = Date.parse(`${value}T00:00:00.000Z`);
+  return Number.isFinite(epoch) && new Date(epoch).toISOString().slice(0, 10) === value ? epoch : null;
+}
+
+export function diagnosticDate(value, now = new Date()) {
+  const today = isoDateEpoch(now.toISOString().slice(0, 10));
+  const epoch = value === undefined ? today + DAY_MS : isoDateEpoch(value);
+  if (epoch === null || epoch < today || epoch > today + 365 * DAY_MS) throw new Error('Use a real diagnostic date from today through the next 365 days.');
+  return new Date(epoch).toISOString().slice(0, 10);
+}
+
+export function outOfCoverageDate(calendar, now = new Date()) {
+  const today = isoDateEpoch(now.toISOString().slice(0, 10));
+  const latest = today + 365 * DAY_MS;
+  const start = isoDateEpoch(calendar?.from);
+  const days = calendar?.days;
+  if (start === null || !Number.isInteger(days) || days < 1) return new Date(latest).toISOString().slice(0, 10);
+  // Calendar end is exclusive. Either boundary can be used if the API accepts it.
+  const end = start + days * DAY_MS;
+  const outside = [Math.max(today, end), Math.min(latest, start - DAY_MS)]
+    .find((epoch) => epoch >= today && epoch <= latest && (epoch < start || epoch >= end));
+  return outside === undefined ? null : new Date(outside).toISOString().slice(0, 10);
+}
+
+function assertUnpricedRail(journeys, description) {
+  const rail = Array.isArray(journeys) ? journeys.filter((journey) => journey.provider === 'rail') : [];
+  if (!rail.length || rail.some((journey) => journey.price !== null || !Number.isFinite(journey.durationMinutes) || journey.durationMinutes <= 0
+    || !Number.isFinite(Date.parse(journey.departure)) || !Number.isFinite(Date.parse(journey.arrival))
+    || !journey.from?.name || !journey.to?.name || !Array.isArray(journey.legs) || !journey.legs.length)) {
+    throw new Error(`Expected valid unpriced published timetable journeys: ${description}.`);
+  }
+  return rail;
+}
+
+export async function verifyDeployment(url, date) {
   const origin = new URL(url);
   if (origin.protocol !== 'https:' || !origin.hostname.endsWith('.workers.dev')) throw new Error('Verify a public HTTPS workers.dev deployment.');
+  const queryDate = diagnosticDate(date);
   const { files } = readPackage();
   const checked = await Promise.all(files.map(async (file) => {
     const response = await fetch(new URL(file.path, origin), { signal: AbortSignal.timeout(20_000) });
@@ -124,7 +165,7 @@ export async function verifyDeployment(url) {
   const healthResponse = await fetch(new URL('/api/health', origin), { signal: AbortSignal.timeout(20_000) });
   const health = await healthResponse.json();
   if (!healthResponse.ok || !health.ok) throw new Error('Public API health failed.');
-  const query = { from: { name: 'Berlin', lat: 52.52, lon: 13.405, iata: 'BER' }, to: { name: 'Munich', lat: 48.137, lon: 11.575, iata: 'MUC' }, date: '2026-09-10', adults: 1, cabin: 'economy', modes: ['plane', 'train', 'bus', 'metro'] };
+  const query = { from: { name: 'Berlin', lat: 52.52, lon: 13.405, iata: 'BER' }, to: { name: 'Munich', lat: 48.137, lon: 11.575, iata: 'MUC' }, date: queryDate, adults: 1, cabin: 'economy', modes: ['plane', 'train', 'bus', 'metro'] };
   const plan = async (body) => {
     const response = await fetch(new URL('/api/plan', origin), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(30_000) });
     const result = await response.json();
@@ -133,19 +174,24 @@ export async function verifyDeployment(url) {
     return result;
   };
   const result = await plan(query);
-  const rail = result.journeys.filter((journey) => journey.provider === 'rail');
-  if (rail.length !== 8 || rail.some((journey) => journey.price !== null)) throw new Error('Expected eight unpriced published Berlin–Munich timetable journeys.');
-  const outside = await plan({ ...query, date: '2026-11-01', modes: ['train'] });
-  if (outside.journeys.length || outside.providers[0]?.status !== 'unavailable') throw new Error('An out-of-coverage date returned timetable results.');
+  const rail = assertUnpricedRail(result.journeys, 'Berlin to Munich');
+  const outsideDate = outOfCoverageDate(result.providers.find(({ id }) => id === 'rail')?.calendar);
+  let outsideStatus = 'skipped: published calendar covers the API date range';
+  if (outsideDate) {
+    const outside = await plan({ ...query, date: outsideDate, modes: ['train'] });
+    outsideStatus = outside.providers.find(({ id }) => id === 'rail')?.status;
+    if (outside.journeys.length || outsideStatus !== 'unavailable') throw new Error('An out-of-coverage date returned timetable results.');
+  }
   const uncovered = await plan({ ...query, from: { name: 'Tokyo', lat: 35.6762, lon: 139.6503, iata: 'TYO' }, modes: ['train'] });
   if (uncovered.journeys.length || uncovered.providers[0]?.status !== 'empty') throw new Error('An uncovered origin returned timetable results.');
-  return { url: origin.origin, verifiedAssets: checked.length, health: true, railJourneys: rail.length, railFares: 'unknown', fastestMinutes: Math.min(...rail.map((journey) => journey.durationMinutes)),
-    providers: result.providers.map(({ id, status }) => ({ id, status })), outOfCoverage: outside.providers[0].status, uncoveredOrigin: uncovered.providers[0].status,
+  return { url: origin.origin, date: queryDate, verifiedAssets: checked.length, health: true, railJourneys: rail.length, railFares: 'unknown', fastestMinutes: Math.min(...rail.map((journey) => journey.durationMinutes)),
+    providers: result.providers.map(({ id, status }) => ({ id, status })), outOfCoverage: outsideStatus, outOfCoverageDate: outsideDate, uncoveredOrigin: uncovered.providers[0].status,
     attribution: rail[0].sources[0].attribution, retrievedAt: rail[0].source.fetchedAt, internalCredentialFieldsExposed: false };
 }
 
-async function verifyWithTail({ url, tailUrl }) {
+async function verifyWithTail({ url, tailUrl, date }) {
   if (typeof tailUrl !== 'string' || !tailUrl.startsWith('wss://')) throw new Error('A valid temporary tail URL is required.');
+  const queryDate = diagnosticDate(date);
   const events = [];
   const socket = new WebSocket(tailUrl, 'trace-v1');
   socket.binaryType = 'arraybuffer';
@@ -163,9 +209,26 @@ async function verifyWithTail({ url, tailUrl }) {
       socket.addEventListener('open', () => { clearTimeout(timer); socket.send(JSON.stringify({ debug: false })); resolve(); }, { once: true });
       socket.addEventListener('error', () => { clearTimeout(timer); reject(new Error('Tail connection failed.')); }, { once: true });
     });
-    const verified = await verifyDeployment(url);
+    // Hit real route searches first: health must not warm the new isolate before
+    // the cold-request measurement. No synthetic fare fixtures enter this path.
+    const cities = {
+      Berlin: { name: 'Berlin', lat: 52.52, lon: 13.405, iata: 'BER' },
+      Munich: { name: 'Munich', lat: 48.137, lon: 11.575, iata: 'MUC' },
+      Hamburg: { name: 'Hamburg', lat: 53.5511, lon: 9.9937, iata: 'HAM' },
+      Frankfurt: { name: 'Frankfurt', lat: 50.1109, lon: 8.6821, iata: 'FRA' },
+    };
+    const measuredRoutes = [];
+    for (const [from, to] of [['Berlin', 'Munich'], ['Berlin', 'Munich'], ['Munich', 'Berlin'], ['Hamburg', 'Frankfurt']]) {
+      const response = await fetch(new URL('/api/plan', url), { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ from: cities[from], to: cities[to], date: queryDate, adults: 1, cabin: 'economy', modes: ['train'] }), signal: AbortSignal.timeout(30_000) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(`Live measured route failed: ${from} to ${to}.`);
+      const rail = assertUnpricedRail(body.journeys, `${from} to ${to}`);
+      measuredRoutes.push({ from, to, journeys: rail.length, fastestMinutes: Math.min(...rail.map((journey) => journey.durationMinutes)) });
+    }
+    const verified = await verifyDeployment(url, queryDate);
     await new Promise((resolve) => setTimeout(resolve, 2500));
-    return { ...verified, traceEvents: events.slice(0, 30) };
+    return { ...verified, measuredRoutes, traceEvents: events.slice(0, 30) };
   } finally { socket.close(); }
 }
 
@@ -173,7 +236,7 @@ async function main() {
   const mode = process.argv[2];
   if (mode === 'manifest') return { manifest: readPackage().manifest };
   if (mode === 'upload-assets') return { jwt: await uploadAssets(await readInputLine()) };
-  if (mode === 'verify') return verifyDeployment(process.argv[3]);
+  if (mode === 'verify') return verifyDeployment(process.argv[3], process.argv[4]);
   if (mode === 'verify-tail') return verifyWithTail(await readInputLine());
   if (mode === 'connector-package') return workerPackage({ bundled: process.argv.includes('--bundled-assets') });
   if (mode === 'connector-package-chunk') {

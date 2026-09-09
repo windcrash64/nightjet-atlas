@@ -47,6 +47,8 @@ Start `npm run dev` in another terminal. Vite on 5173 proxies the Worker's `/api
 
 The compact rail work independently verified 161,727 service/calendar bits against the raw weekly calendar and exceptions, all 52,878 packed calls, and 241 train legs across 176 returned journeys. Exact source times, pickup/drop-off permissions, calendar bounds, trip identities, and null fares were checked. Node measurements are documented in [EDGE-DATA.md](docs/EDGE-DATA.md); they are not a replacement for Cloudflare runtime measurements.
 
+The final deployed version is `fb44f9a6b870465d9392b24ecd3336b2`. All 12 public assets matched the built files, API checks passed, and measured requests had no exceptions. Routing optimizations preserved 999 journeys across 228 exact response comparisons. Current checks total 141 passing tests, with 15 optional legacy full-network integration tests skipped. Actual Cloudflare CPU was 5–9 ms for warm/other measured routes and 12 ms for the first search; that cold measurement remains above the nominal 10-ms free allowance. See [EDGE-DATA.md](docs/EDGE-DATA.md) before widening traffic or coverage.
+
 The API rejects malformed/oversized requests and uncovered rail dates. Provider failures are reported independently, so an unavailable flight provider does not remove valid rail results. Booking links retain provider attribution and completeness; multi-ticket quotes must not be presented as a single protected booking. Neither scheduled times nor a health response guarantee running status or inventory.
 
 ## Remaining external setup

@@ -48,6 +48,14 @@ Build `dist/` and generate `edge-network.json` first. The optional `node scripts
 
 After each deployment, verify the printed URL's `/api/health` and perform a real rail search in the UI. Without a flight-provider secret, health should report Skyscanner as `not_configured` and rail as `bundled_timetable`.
 
+The deployment helper also checks published asset hashes and actual timetable responses:
+
+```sh
+node scripts/deploy-cloudflare.mjs verify https://travel-freely.windcrash64.workers.dev
+```
+
+It searches tomorrow in UTC by default; an optional final `YYYY-MM-DD` argument selects another date within the API's allowed range. It derives the uncovered-date check from the returned calendar. `verify-tail` accepts a temporary Cloudflare diagnostic session over standard input and measures actual request CPU; keep that session credential private.
+
 ## Flight and optional rail secrets
 
 Live flight quotes require a Skyscanner-approved partner key with Flights Live Prices access. No such key is configured by this repository. Flight and operator handoffs remain usable without it.
