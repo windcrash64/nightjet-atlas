@@ -4,8 +4,14 @@ data/cache/
 src/data/network.json
 .wrangler/
 .dev.vars
+.env
+.env.*
+!.env.example
 .claude/
 *.local
 prod.json
 *.html
 !index.html
+
+src/data/edge-network.json
+worker/.build/

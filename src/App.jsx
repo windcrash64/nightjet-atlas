@@ -1,394 +1,1380 @@
-/**
- * THE CLOCK FACE
- *
- * A person types two places and needs to see, in about twenty seconds, which
- * way to go and whether they can sleep through it.
- *
- * The results are one object, not eight rows: a single shared time ruler with
- * the real computed sky behind it. That is what replaces price, because there
- * is no price — open feeds carry schedules, not fares, and there is no code
- * path here that invents one.
- */
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import AtlasMap from "./components/AtlasMap.jsx";
+import Icon from "./components/Icon.jsx";
+import SearchProgress from "./components/SearchProgress.jsx";
+import { useJourneySearch } from "./hooks/useJourneySearch.js";
+import { tripKey } from "./lib/search-pipeline.js";
+import { blankCosts, dayOffsetLabel, hasCosts, maximumTravelDate, readSavedTrips, savedTripIdentity, validateTrip } from "./lib/trip-state.js";
+import {
+  places,
+  searchPlaces,
+  nearestAirports,
+  providerLinks,
+  formatDuration,
+  budgetTotal,
+  rankJourneys,
+} from "./lib/planner.js";
+import { ribbonFor, timeAxis } from "./lib/ribbon.js";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import Globe from './components/Globe.jsx';
-import JourneyRow from './components/JourneyRow.jsx';
-import { badgesFor, cadenceOf } from './lib/summarise.js';
-import { timeAxis, ribbonFor, sortsFor, positionOn } from './lib/ribbon.js';
-import { hhmm, dur, isoToday, isoToYmd, isoPlusDays, dayLabel } from './lib/format.js';
+const Globe = lazy(() => import("./components/Globe.jsx"));
+const today = () => new Date().toISOString().slice(0, 10);
+const tomorrow = () => new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+const findCity = (name) => places.find((p) => p.name === name) || places[0];
+const money = (value) =>
+  new Intl.NumberFormat("en-IE", {
+    style: "currency",
+    currency: "EUR",
+    maximumFractionDigits: 2,
+  }).format(value);
+const cityNames = [
+  "London",
+  "Paris",
+  "Berlin",
+  "Munich",
+  "Prague",
+  "Vienna",
+  "Rome",
+  "Barcelona",
+  "Amsterdam",
+  "Istanbul",
+  "Budapest",
+  "Warsaw",
+  "Copenhagen",
+  "Lisbon",
+  "Zurich",
+];
+const readSaved = () => { try { return readSavedTrips(localStorage); } catch { return []; } };
 
-/* ---------- place field ---------- */
-
-function PlaceField({ id, label, value, onText, onPick, placeholder }) {
-  const [open, setOpen] = useState(false);
-  const [hits, setHits] = useState([]);
-  const timer = useRef();
-
-  useEffect(() => {
-    clearTimeout(timer.current);
-    if (!open || value.trim().length < 2) { setHits([]); return; }
-    // /api/places is a synchronous in-memory scan and is NOT rate limited —
-    // only /api/search is. So debounced-per-keystroke is fine here.
-    timer.current = setTimeout(async () => {
-      try {
-        const r = await fetch(`/api/places?q=${encodeURIComponent(value.trim())}`);
-        const d = await r.json();
-        setHits(d.places ?? []);
-      } catch { setHits([]); }
-    }, 180);
-    return () => clearTimeout(timer.current);
-  }, [value, open]);
-
+function PlaceInput({ label, value, onChange, onDraftChange = () => {} }) {
+  const [text, setText] = useState(value.name),
+    [open, setOpen] = useState(false),
+    [highlight, setHighlight] = useState(0);
+  const results = useMemo(() => searchPlaces(text, 6), [text]);
+  const ref = useRef(null);
+  useEffect(() => { setText(value.name); setHighlight(0); onDraftChange(label, true); }, [value]);
+  const invalid = text !== value.name;
+  const pick = (place) => {
+    onChange(place);
+    setText(place.name);
+    setOpen(false);
+    onDraftChange(label, true);
+    ref.current?.focus();
+  };
   return (
-    <div className="field">
-      <label htmlFor={id}>{label}</label>
-      <input
-        id={id} value={value} placeholder={placeholder} autoComplete="off"
-        onChange={(e) => { onText(e.target.value); setOpen(true); }}
-        // Select the whole value on focus so typing REPLACES the station.
-        // Without this, clicking into a field holding "Berlin Hbf" and typing
-        // "Madrid" leaves "MadridBerlin Hbf", which matches nothing.
-        onFocus={(e) => { e.target.select(); setOpen(true); }}
-        onBlur={() => setTimeout(() => setOpen(false), 160)}
-      />
-      {open && hits.length > 0 && (
-        <ul className="suggestions">
-          {hits.map((p, i) => (
-            <li key={`${p.name}-${i}`}>
-              <button type="button" onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => { onPick(p); setOpen(false); setHits([]); }}>
-                {p.name}
-              </button>
-            </li>
-          ))}
+    <div className="place-input">
+      <label htmlFor={`place-${label}`}>{label}</label>
+      <div className="place-value">
+        <span
+          className={`place-dot ${label === "To" ? "destination-dot" : ""}`}
+        />
+        <input
+          ref={ref}
+          id={`place-${label}`}
+          role="combobox"
+          aria-expanded={open}
+          aria-controls={`list-${label}`}
+          aria-autocomplete="list"
+          aria-invalid={invalid && !open ? true : undefined}
+          aria-describedby={invalid && !open ? `help-${label}` : undefined}
+          aria-activedescendant={
+            open && results[highlight] ? `${label}-${highlight}` : undefined
+          }
+          value={text}
+          autoComplete="off"
+          spellCheck="false"
+          onFocus={(e) => {
+            e.target.select();
+            setOpen(true);
+          }}
+          onBlur={() => {
+            setOpen(false);
+          }}
+          onChange={(e) => {
+            setText(e.target.value);
+            setOpen(true);
+            setHighlight(0);
+            onDraftChange(label, e.target.value === value.name);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setOpen(true);
+              setHighlight((h) => Math.min(results.length - 1, h + 1));
+            }
+            if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setHighlight((h) => Math.max(0, h - 1));
+            }
+            if (e.key === "Enter" && open) {
+              e.preventDefault();
+              if (results[highlight]) pick(results[highlight]);
+            }
+            if (e.key === "Escape") {
+              setOpen(false);
+              setText(value.name);
+              onDraftChange(label, true);
+            }
+          }}
+        />
+        <span className="airport-code">{invalid ? "Choose" : value.iata || value.country}</span>
+      </div>
+      {invalid && !open && <small className="place-error" id={`help-${label}`}>Choose a place from the suggestions.</small>}
+      {open && (
+        <ul id={`list-${label}`} role="listbox" className="place-options">
+          {results.length ? (
+            results.map((p, i) => (
+              <li
+                key={`${p.kind}-${p.name}-${p.iata}`}
+                id={`${label}-${i}`}
+                role="option"
+                aria-selected={i === highlight}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => pick(p)}
+              >
+                <Icon name={p.kind === "airport" ? "plane" : "pin"} />
+                <span>
+                  {p.name}
+                  <small>
+                    {p.countryName || p.country}
+                    {p.kind === "airport" ? " · Airport" : ""}
+                  </small>
+                </span>
+                <b>{p.iata}</b>
+              </li>
+            ))
+          ) : (
+            <li className="no-place">Try a city name or an airport code.</li>
+          )}
         </ul>
       )}
     </div>
   );
 }
 
-/* ---------- the detail of one journey ---------- */
-
-function Detail({ journey }) {
-  if (!journey) return null;
+function Modal({ title, children, onClose }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    el.showModal();
+    return () => el.close();
+  }, []);
   return (
-    <div className="detail">
-      <ol className="legs">
-        {journey.legs.map((l, i) => (
-          <li key={i} className={`leg-row leg-row--${l.mode}`}>
-            <span className="leg-time num">
-              {hhmm(l.departMin)}<br />
-              <span className="leg-time-arr">{hhmm(l.arriveMin)}</span>
-            </span>
-            <span className="leg-body">
-              <span className="leg-name">{l.service || (l.mode === 'walk' ? 'Walk' : 'Train')}</span>
-              {l.operator && <span className="leg-op"> · {l.operator}</span>}
-              {l.mode === 'night_rail' && <span className="leg-tag num">SLEEPER</span>}
-              <br />
-              <span className="leg-stops">
-                {l.from.name} → {l.to.name}
-                {/* intermediateStops is an INTEGER, not a list of positions.
-                    Drawing tick marks along the route would be fabricating
-                    coordinates the data does not contain. */}
-                {l.intermediateStops > 0 && <span className="leg-via"> · {l.intermediateStops} stops</span>}
-              </span>
-            </span>
-          </li>
-        ))}
-      </ol>
-    </div>
+    <dialog
+      ref={ref}
+      className="modal"
+      onCancel={onClose}
+      onClick={(e) => {
+        if (e.target === ref.current) onClose();
+      }}
+      aria-labelledby="modal-title"
+    >
+      <header>
+        <h2 id="modal-title">{title}</h2>
+        <button
+          className="icon-button"
+          onClick={onClose}
+          aria-label="Close dialog"
+        >
+          <Icon name="close" />
+        </button>
+      </header>
+      {children}
+    </dialog>
   );
 }
 
-/* ---------- app ---------- */
+function JourneyCard({ journey, active, onSelect, ribbon }) {
+  const flight = journey.mode === "plane",
+    price = journey.price;
+  return (
+    <button
+      className={`journey-card ${active ? "active" : ""}`}
+      onClick={onSelect}
+    >
+      <div className="journey-top">
+        <span className={`mode-square ${flight ? "flight" : "rail"}`}>
+          <Icon
+            name={flight ? "plane" : journey.mode === "bus" ? "bus" : "train"}
+          />
+        </span>
+        <span>
+          <strong>
+            {{ plane: "Flight", train: "Train", bus: "Bus", metro: "Metro" }[
+              journey.mode
+            ] || "Transit"}{" "}
+            ·{" "}
+            {journey.legs?.find((l) => l.service)?.service ||
+              journey.source?.name ||
+              journey.provider}
+          </strong>
+          <small>
+            {journey.changes == null
+              ? "Changes unconfirmed"
+              : journey.changes === 0
+                ? "Direct"
+                : `${journey.changes} changes`}{" "}
+            · {flight ? "Provider fare" : "Published timetable"}
+          </small>
+        </span>
+        <Icon name="chevron" size={16} />
+      </div>
+      <div className="journey-bottom">
+        <strong>{formatDuration(journey.durationMinutes)}</strong>
+        <span>
+          {price?.amount != null
+            ? new Intl.NumberFormat("en-IE", {
+                style: "currency",
+                currency: price.currency,
+              }).format(price.amount)
+            : "Fare unavailable"}
+        </span>
+      </div>
+      <div className="journey-times">
+        <span>
+          {journey.departure?.slice(11, 16)} → {journey.arrival?.slice(11, 16)}
+          {dayOffsetLabel(journey.departure, journey.arrival)}
+        </span>
+        <span>{flight ? "Airport to airport" : "Station to station"}</span>
+      </div>
+      {ribbon?.bands?.length > 0 && (
+        <div
+          className="sky-ribbon"
+          title="Computed daylight along this rail journey, on a shared time scale"
+          aria-label="Computed daylight along this rail journey"
+        >
+          <div
+            style={{
+              left: `${ribbon.left * 100}%`,
+              width: `${ribbon.width * 100}%`,
+            }}
+          >
+            {ribbon.bands.map((b, i) => (
+              <span
+                key={i}
+                className={`band--${b.band}`}
+                style={{
+                  left: `${b.start * 100}%`,
+                  width: `${(b.end - b.start) * 100}%`,
+                }}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="journey-line">
+        <span>{journey.legs?.[0]?.from?.name || journey.from?.name}</span>
+        <span>→</span>
+        <span>{journey.legs?.at(-1)?.to?.name || journey.to?.name}</span>
+      </div>
+    </button>
+  );
+}
 
-const START = {
-  from: { name: 'Frankfurt(Main)Hbf', lat: 50.1067, lon: 8.6628 },
-  to: { name: 'Wien Hbf', lat: 48.1856, lon: 16.3367 },
-};
+function legTime(leg) {
+  const clock = (min) =>
+    min == null
+      ? "?"
+      : `${String(Math.floor(min / 60) % 24).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}${min >= 1440 ? ` (+${Math.floor(min / 1440)} day)` : ""}`;
+  return `${leg.departure ? leg.departure.replace("T", " · ").slice(0, 18) : clock(leg.departMin)} → ${leg.arrival ? leg.arrival.replace("T", " · ").slice(0, 18) : clock(leg.arriveMin)}`;
+}
 
 export default function App() {
-  const [fromText, setFromText] = useState(START.from.name);
-  const [toText, setToText] = useState(START.to.name);
-  const [from, setFrom] = useState(START.from);
-  const [to, setTo] = useState(START.to);
-  const [departHour, setDepartHour] = useState(16);
-  const [date, setDate] = useState(() => isoToday());
-  const [state, setState] = useState({ status: 'idle', journeys: [] });
-  const [selected, setSelected] = useState(0);
-  const [hovered, setHovered] = useState(-1);
-  const [sort, setSort] = useState('earliest');
-  const [reduced, setReduced] = useState(false);
-  const inflight = useRef(null);
-
+  const [from, setFrom] = useState(() => findCity("Berlin")),
+    [to, setTo] = useState(() => findCity("Munich"));
+  const [date, setDate] = useState(tomorrow),
+    [adults, setAdults] = useState(1),
+    [budget, setBudget] = useState(150);
+  const [mode, setMode] = useState("all"),
+    [sort, setSort] = useState("fastest"),
+    [tab, setTab] = useState("explore"),
+    [view, setView] = useState("map");
+  const [saved, setSaved] = useState(readSaved),
+    [modal, setModal] = useState(null),
+    [toast, setToast] = useState("");
+  const { state, start: search, cancel: cancelSearch } = useJourneySearch();
+  const [selected, setSelected] = useState(null);
+  const [costs, setCosts] = useState(blankCosts);
+  const [bag, setBag] = useState("backpack");
+  const [visibleCount, setVisibleCount] = useState(3);
+  const [mobileMap, setMobileMap] = useState(false);
+  const [validation, setValidation] = useState("");
+  const [placeValidity, setPlaceValidity] = useState({ From: true, To: true });
+  const inputKey = tripKey({ from, to, date, adults });
+  const [costsKey, setCostsKey] = useState(inputKey);
+  const costsStale = hasCosts(costs) && costsKey !== inputKey;
+  const stale = state.key && state.key !== inputKey;
+  const [now, setNow] = useState(Date.now);
+  const retryIn = Math.max(0, Math.ceil(((state.retryAt || 0) - now) / 1000));
   useEffect(() => {
-    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
-    const on = () => setReduced(mq.matches);
-    on(); mq.addEventListener('change', on);
-    return () => mq.removeEventListener('change', on);
-  }, []);
-
-  const run = useCallback(async (o = from, d = to, h = departHour, when = date) => {
-    // Never more than one search in flight. The server answers 503 at four
-    // concurrent and 429 above twenty a minute, and a stale response landing
-    // after a newer one would show the wrong answer for the current inputs.
-    inflight.current?.abort();
-    const ctl = new AbortController();
-    inflight.current = ctl;
-
-    setState((s) => ({ ...s, status: 'loading' }));
-    setSelected(0);
-    try {
-      const r = await fetch('/api/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          from: { lat: o.lat, lon: o.lon }, to: { lat: d.lat, lon: d.lon },
-          departHour: h, date: isoToYmd(when),
-        }),
-        signal: ctl.signal,
-      });
-      const data = await r.json().catch(() => ({}));
-      if (ctl.signal.aborted) return;
-
-      // 429 and 503 are distinct, recoverable states — not "the server is
-      // down". Collapsing them into one message is how a rate limit looks
-      // like an outage.
-      if (r.status === 429) {
-        setState({ status: 'error', kind: 'rate', message: 'That is a lot of searches in a minute. Give it a moment.', journeys: [] });
-        return;
-      }
-      if (r.status === 503) {
-        setState({ status: 'error', kind: 'busy', message: 'Busy right now. Try that again.', journeys: [] });
-        return;
-      }
-      if (!r.ok) {
-        setState({ status: 'error', message: data.error ?? 'That search could not be run.', journeys: [] });
-        return;
-      }
-      setState({
-        status: 'done', journeys: data.journeys ?? [],
-        coverage: data.coverage, sources: data.sources,
-        generatedAt: data.generatedAt, date: data.date, calendar: data.calendar,
-      });
-    } catch (e) {
-      if (e.name === 'AbortError') return;
-      setState({ status: 'error', message: 'The search service is not responding.', journeys: [] });
-    }
-  }, [from, to, departHour, date]);
-
-  useEffect(() => { run(); /* eslint-disable-next-line */ }, []);
-
-  const journeys = state.journeys ?? [];
-
-  // Every ribbon is measured against ONE axis, so a 4h option is physically
-  // shorter than a 15h one. Per-row normalising would make them the same
-  // length and destroy the only comparison this list exists to make.
-  const axis = useMemo(() => timeAxis(journeys), [journeys]);
-  const ymd = state.date ?? isoToYmd(date);
-  const ribbons = useMemo(
-    () => journeys.map((j) => ribbonFor(j, axis, ymd)),
-    [journeys, axis, ymd],
+    if (!state.retryAt) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [state.retryAt]);
+  useEffect(() => {
+    if (state.key && state.key !== inputKey) cancelSearch();
+    setSelected(null);
+    setValidation("");
+  }, [inputKey]);
+  const draftChanged = (label, valid) => setPlaceValidity((current) => current[label] === valid ? current : { ...current, [label]: valid });
+  const originAirports = useMemo(() => nearestAirports(from, 3), [from]),
+    destinationAirports = useMemo(() => nearestAirports(to, 3), [to]);
+  const links = useMemo(
+    () => providerLinks(from, to, date, { adults }),
+    [from, to, date, adults],
   );
-
-  const sorts = useMemo(() => sortsFor(journeys), [journeys]);
-  const order = useMemo(() => {
-    const cmp = sorts.find((s) => s.key === sort)?.cmp;
-    const idx = journeys.map((_, i) => i);
-    return cmp ? idx.sort((a, b) => cmp(journeys[a], journeys[b])) : idx;
-  }, [journeys, sorts, sort]);
-
-  const badges = useMemo(() => badgesFor(journeys), [journeys]);
-  const cadence = useMemo(() => cadenceOf(journeys), [journeys]);
-  const active = journeys[selected] ?? null;
-
-  // Hour ticks across the shared axis. Three at 360px, six above it — a ruler
-  // nobody can read is decoration.
-  const ticks = useMemo(() => {
-    const out = [];
-    const startHour = Math.ceil(axis.startMin / 360) * 360;
-    for (let m = startHour; m <= axis.endMin; m += 360) {
-      out.push({ min: m, at: positionOn(axis, m), midnight: ((m % 1440) + 1440) % 1440 === 0 });
+  const mapCities = useMemo(
+    () => places.filter((p) => cityNames.includes(p.name)),
+    [],
+  );
+  const journeys = useMemo(
+    () =>
+      rankJourneys(
+        state.journeys.filter((j) => mode === "all" || j.mode === mode),
+        sort,
+      ),
+    [state.journeys, mode, sort],
+  );
+  const active = !stale
+    ? journeys.find((j) => j.id === selected)
+    : undefined;
+  const railProvider = state.providers.find((p) => p.id === "rail");
+  const flightProvider = state.providers.find((p) => p.id === "skyscanner");
+  const sourceRows = railProvider?.sources || [];
+  const ribbons = useMemo(() => {
+    const minutes = (iso, day) =>
+      (Date.parse(`${iso}Z`) - Date.parse(`${day}T00:00:00Z`)) / 60000;
+    const rail = state.journeys
+      .filter((j) => j.mode === "train" && j.timeBasis === "agency_local")
+      .map((j) => ({
+        ...j,
+        departMin: minutes(j.departure, j.date),
+        arriveMin: minutes(j.arrival, j.date),
+        legs: j.legs.map((l) => ({
+          ...l,
+          departMin: minutes(l.departure, j.date),
+          arriveMin: minutes(l.arrival, j.date),
+        })),
+      }));
+    const axis = timeAxis(rail);
+    return Object.fromEntries(
+      rail.map((j) => [
+        j.id,
+        ribbonFor(j, axis, Number(j.date.replaceAll("-", ""))),
+      ]),
+    );
+  }, [state.journeys]);
+  const total = budgetTotal(
+    Object.fromEntries(
+      Object.entries(costs).map(([k, v]) => [k, v === "" ? null : Number(v)]),
+    ),
+  );
+  const knownCosts = Object.values(costs)
+    .filter((v) => v !== "" && Number.isFinite(Number(v)) && Number(v) >= 0)
+    .reduce((a, v) => a + Number(v), 0);
+  const isSaved = saved.some((s) => savedTripIdentity(s) === savedTripIdentity({ from, to, date, adults }));
+  const notify = (text) => setToast(text);
+  useEffect(() => {
+    if (toast) {
+      const t = setTimeout(() => setToast(""), 3500);
+      return () => clearTimeout(t);
     }
-    return out;
-  }, [axis]);
+  }, [toast]);
+
+  function run(options = {}, restored = null) {
+    const trip = restored || { from, to, date, adults };
+    const message = !restored && (!placeValidity.From || !placeValidity.To)
+      ? 'Choose both places from the suggestions before searching.'
+      : validateTrip(trip);
+    if (message) { setValidation(message); return; }
+    setValidation('');
+    setSelected(null);
+    setVisibleCount(3);
+    const point = (p) => ({ name: p.name, lat: p.lat, lon: p.lon, ...(p.iata ? { iata: p.iata } : {}) });
+    search({ from: point(trip.from), to: point(trip.to), date: trip.date, adults: trip.adults,
+      cabin: 'economy', modes: ['plane', 'train', 'bus', 'metro'] }, options);
+  }
+  useEffect(() => { run(); }, []);
+  function saveTrip() {
+    const message = validateTrip({ from, to, date, adults });
+    if (message || !placeValidity.From || !placeValidity.To) { setValidation(message || 'Choose both places from the suggestions before saving.'); return; }
+    const identity = savedTripIdentity({ from, to, date, adults });
+    const existing = saved.find((s) => savedTripIdentity(s) === identity);
+    const next = [
+      { id: existing?.id || crypto.randomUUID(), from, to, date, adults, budget, bag, costs, costsKey, mode },
+      ...saved.filter((s) => savedTripIdentity(s) !== identity),
+    ].slice(0, 30);
+    try {
+      localStorage.setItem('travel-freely.saved', JSON.stringify(next));
+      setSaved(next);
+      notify(existing ? 'Saved trip updated on this device.' : 'Trip saved on this device.');
+    } catch { notify('Your browser could not save this trip.'); }
+  }
+  function openSaved(trip) {
+    cancelSearch({ silent: true });
+    const expired = trip.date < today();
+    const nextDate = expired ? tomorrow() : trip.date;
+    setFrom(trip.from);
+    setTo(trip.to);
+    setDate(nextDate);
+    setAdults(trip.adults);
+    setBudget(trip.budget);
+    setBag(trip.bag);
+    setMode(trip.mode || 'all');
+    setCosts(trip.costs || blankCosts());
+    setCostsKey(trip.costsKey || tripKey(trip));
+    setTab('explore');
+    setPlaceValidity({ From: true, To: true });
+    if (expired) notify('The saved date has passed. Searching tomorrow; review your budget estimates.');
+    run({}, { ...trip, date: nextDate });
+  }
+  function removeSaved(id) {
+    const next = saved.filter((s) => s.id !== id);
+    try {
+      localStorage.setItem("travel-freely.saved", JSON.stringify(next));
+      setSaved(next);
+    } catch {
+      notify("Your browser could not update saved trips.");
+    }
+  }
+  const modeOptions = [
+    ["all", "compass", "All ways"],
+    ["plane", "plane", "Flights"],
+    ["train", "train", "Trains"],
+    ["bus", "bus", "Buses"],
+    ["metro", "train", "Metro"],
+  ];
+  const dateLabel = date
+    ? new Date(`${date}T12:00:00`).toLocaleDateString("en-GB", {
+        day: "numeric",
+        month: "short",
+      })
+    : "Choose date";
 
   return (
-    <div className="app">
-      <header className="masthead">
-        <h1>Where next</h1>
-        <p className="masthead-stats num">
-          189,209 STOPS · 384,515 SERVICES · 6 FEEDS
-        </p>
-      </header>
-
-      <form className="search" onSubmit={(e) => { e.preventDefault(); run(); }}>
-        <PlaceField
-          id="from" label="From" value={fromText}
-          placeholder="Where you are"
-          onText={setFromText}
-          onPick={(p) => { setFrom(p); setFromText(p.name); run(p, to, departHour, date); }}
-        />
-        <button
-          type="button" className="swap" aria-label="Swap origin and destination"
-          onClick={() => {
-            const [nf, nt] = [to, from];
-            const [nft, ntt] = [toText, fromText];
-            setFrom(nf); setTo(nt); setFromText(nft); setToText(ntt);
-            run(nf, nt, departHour, date);
+    <div className={`app-shell ${mobileMap ? "mobile-map-active" : ""}`}>
+      <header className="topbar">
+        <a
+          href="#"
+          className="brand"
+          onClick={(e) => {
+            e.preventDefault();
+            setTab("explore");
           }}
-        >⇄</button>
-        <PlaceField
-          id="to" label="To" value={toText}
-          placeholder="Where you're going"
-          onText={setToText}
-          onPick={(p) => { setTo(p); setToText(p.name); run(from, p, departHour, date); }}
-        />
-        <div className="field field--date">
-          <label htmlFor="when">On</label>
-          <input
-            id="when" type="date" value={date}
-            min={isoToday()}
-            // Bounded by the calendars actually ingested: past the horizon the
-            // server stops filtering by day, so the answer would quietly go
-            // back to "every train, any day" while still looking precise.
-            max={state.calendar?.from
-              ? isoPlusDays(state.calendar.from, (state.calendar.days ?? 1) - 1)
-              : undefined}
-            onChange={(e) => {
-              const v = e.target.value || isoToday();
-              setDate(v); run(from, to, departHour, v);
-            }}
-          />
-          <span className="field-note">{dayLabel(date)}</span>
+          aria-label="Travel Freely home"
+        >
+          <span className="brand-symbol">
+            <Icon name="plane" size={22} />
+          </span>
+          travel<span>freely</span>
+          <span className="beta">BETA</span>
+        </a>
+        <nav aria-label="Main navigation">
+          <button
+            className={tab === "explore" ? "current" : ""}
+            onClick={() => setTab("explore")}
+          >
+            <Icon name="compass" size={17} />
+            Explore
+          </button>
+          <button
+            className={tab === "saved" ? "current" : ""}
+            onClick={() => setTab("saved")}
+          >
+            <Icon name="heart" size={17} />
+            Saved trips
+            {saved.length > 0 && (
+              <span className="nav-count">{saved.length}</span>
+            )}
+          </button>
+        </nav>
+        <div className="topbar-right">
+          <button className="about-button" onClick={() => setModal("about")}>
+            Made for travelers <Icon name="external" size={13} />
+          </button>
+          <span className="currency">EUR €</span>
+          <button
+            className="profile"
+            aria-label="About Travel Freely"
+            onClick={() => setModal("about")}
+          >
+            tf
+          </button>
         </div>
-        <div className="field field--time">
-          <label htmlFor="depart">After</label>
-          <select id="depart" value={departHour}
-                  onChange={(e) => { const h = Number(e.target.value); setDepartHour(h); run(from, to, h, date); }}>
-            {Array.from({ length: 24 }, (_, h) => (
-              <option key={h} value={h}>{String(h).padStart(2, '0')}:00</option>
-            ))}
-          </select>
-        </div>
-      </form>
-
+      </header>
       <div className="workspace">
-        <main className="answer">
-          {state.status === 'loading' && !journeys.length && (
-            <p className="notice">Reading the timetables…</p>
-          )}
-
-          {state.status === 'error' && (
-            <p className={`notice notice--${state.kind ?? 'error'}`}>{state.message}</p>
-          )}
-
-          {state.status === 'done' && !journeys.length && (
-            <div className="notice">
-              {state.coverage ? (
-                <p>
-                  {state.coverage} We carry the published timetables of Germany,
-                  France, Spain, Switzerland and the Netherlands, which reach
-                  their neighbours wherever a train crosses the border.
-                </p>
-              ) : (
-                <>
-                  <p>
-                    Nothing runs this way {dayLabel(date) === 'Today' || dayLabel(date) === 'Tomorrow'
-                      ? dayLabel(date).toLowerCase()
-                      : `on ${dayLabel(date)}`} after {String(departHour).padStart(2, '0')}:00.
-                    {' '}Only about a quarter of the network runs on any given day.
-                  </p>
-                  <p className="notice-actions">
-                    <button type="button" className="chip" onClick={() => {
-                      const h = Math.max(0, departHour - 4);
-                      setDepartHour(h); run(from, to, h, date);
-                    }}>Leave earlier</button>
-                    <button type="button" className="chip" onClick={() => {
-                      const next = isoPlusDays(isoToYmd(date), 1);
-                      setDate(next); run(from, to, departHour, next);
-                    }}>Try the next day</button>
-                  </p>
-                </>
-              )}
-            </div>
-          )}
-
-          {journeys.length > 0 && (
-            <>
-              <div className="sortbar">
-                {sorts.map((s) => (
+        <main className="planner-pane">
+          {tab === "saved" ? (
+            <section className="saved-view">
+              <span className="eyebrow">YOUR NEXT CHAPTERS</span>
+              <h1>
+                Little plans.
+                <br />
+                Big possibilities.
+              </h1>
+              <p>Saved on this device. No account needed.</p>
+              {saved.length === 0 ? (
+                <div className="empty-saved">
+                  <Icon name="heart" size={34} />
+                  <h2>A trip worth keeping?</h2>
+                  <p>Save a search and come back to it here.</p>
                   <button
-                    key={s.key} type="button" className="chip"
-                    aria-pressed={sort === s.key}
-                    onClick={() => setSort(s.key)}
-                  >{s.label}</button>
-                ))}
-              </div>
-
-              {/* Said once, above the list. A null repeated on every row reads
-                  as a gap; stated once it reads as a position. */}
-              <p className="no-fare">
-                No fares. Open timetables carry schedules, not prices.
-              </p>
-
-              {cadence && (
-                <p className="cadence">
-                  <strong>{cadence.spine}</strong> runs this route {cadence.every}
-                  {cadence.count < cadence.total
-                    ? ` — ${cadence.count} of these ${cadence.total} are that train`
-                    : ''}.
-                </p>
+                    className="primary-button"
+                    onClick={() => setTab("explore")}
+                  >
+                    Explore a trip <Icon name="arrow" />
+                  </button>
+                </div>
+              ) : (
+                saved.map((s) => (
+                  <article className="saved-card" key={s.id}>
+                    <div>
+                      <strong>
+                        {s.from.name} → {s.to.name}
+                      </strong>
+                      <p>
+                        {s.date} · {s.adults} {s.adults === 1 ? "traveler" : "travelers"} · {money(s.budget)} budget
+                      </p>
+                    </div>
+                    <button
+                      className="icon-button"
+                      aria-label={`Open saved trip to ${s.to.name}`}
+                      onClick={() => openSaved(s)}
+                    >
+                      <Icon name="arrow" />
+                    </button>
+                    <button
+                      className="icon-button"
+                      aria-label={`Remove saved trip to ${s.to.name}`}
+                      onClick={() => removeSaved(s.id)}
+                    >
+                      <Icon name="close" size={16} />
+                    </button>
+                  </article>
+                ))
               )}
-
-              <div className="axis num" aria-hidden="true">
-                {ticks.map((t, i) => (
-                  <span
-                    key={i}
-                    className={`tick${t.midnight ? ' tick--midnight' : ''}`}
-                    style={{ left: `${(t.at * 100).toFixed(3)}%` }}
-                  >{hhmm(t.min)}</span>
+            </section>
+          ) : (
+            <>
+              <div className="intro">
+                <div className="eyebrow">
+                  <span /> LESS ON GETTING THERE. MORE ON BEING THERE.
+                </div>
+                <h1>Where are we going?</h1>
+                <p>Find your way. Keep your freedom.</p>
+              </div>
+              <form
+                className="search-form"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  run();
+                }}
+              >
+                <div className="places-box">
+                  <PlaceInput label="From" value={from} onChange={setFrom} onDraftChange={draftChanged} />
+                  <button
+                    className="swap-button"
+                    type="button"
+                    aria-label="Swap origin and destination"
+                    onClick={() => {
+                      setFrom(to);
+                      setTo(from);
+                    }}
+                  >
+                    <Icon name="swap" size={17} />
+                  </button>
+                  <PlaceInput label="To" value={to} onChange={setTo} onDraftChange={draftChanged} />
+                </div>
+                <div className="date-passengers">
+                  <label>
+                    <span>
+                      Departure <small>ONE WAY</small>
+                    </span>
+                    <div>
+                      <Icon name="calendar" size={17} />
+                      <input
+                        aria-label="Departure date"
+                        type="date"
+                        value={date}
+                        min={today()}
+                        max={maximumTravelDate()}
+                        required
+                        onChange={(e) => setDate(e.target.value)}
+                      />
+                    </div>
+                  </label>
+                  <label>
+                    <span>Travelers</span>
+                    <select
+                      aria-label="Number of travelers"
+                      value={adults}
+                      onChange={(e) => setAdults(Number(e.target.value))}
+                    >
+                      {Array.from({ length: 8 }, (_, i) => (
+                        <option key={i} value={i + 1}>
+                          {i + 1} {i === 0 ? "adult" : "adults"}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <button
+                  className="primary-button search-button"
+                  type="submit"
+                  disabled={state.status === "loading" && !stale || retryIn > 0 && !stale}
+                >
+                  {state.status === "loading" && !stale ? (
+                    <>
+                      <span className="spinner" />
+                      Finding your way…
+                    </>
+                  ) : (
+                    <>
+                      {retryIn > 0 && !stale ? `Try again in ${retryIn}s` : "Find my way"} <Icon name="arrow" size={20} />
+                    </>
+                  )}
+                </button>
+                {state.status === "loading" && !stale && <button className="cancel-search" type="button" onClick={() => cancelSearch()}>Stop search · keep received options</button>}
+                {validation && <p className="search-notice error" role="alert">{validation}</p>}
+              </form>
+              <div className="preferences">
+                <button onClick={() => setModal("budget")}>
+                  <Icon name="wallet" size={16} />
+                  {money(budget)} total budget
+                  <Icon name="chevron" size={13} />
+                </button>
+                <button onClick={() => setModal("budget")}>
+                  <Icon name="bag" size={16} />
+                  {bag === "backpack"
+                    ? "Just a backpack"
+                    : bag === "cabin"
+                      ? "Cabin bag"
+                      : "Checked bag"}
+                  <Icon name="chevron" size={13} />
+                </button>
+              </div>
+              <div className="mode-tabs" role="group" aria-label="Travel mode">
+                {modeOptions.map(([key, icon, label]) => (
+                  <button
+                    key={key}
+                    aria-pressed={mode === key}
+                    className={mode === key ? "selected" : ""}
+                    onClick={() => setMode(key)}
+                  >
+                    <Icon name={icon} size={16} />
+                    {label}
+                  </button>
                 ))}
               </div>
-
-              <div className="rows">
-                {order.map((i) => (
-                  <JourneyRow
-                    key={i}
-                    journey={journeys[i]}
-                    ribbon={ribbons[i]}
-                    badge={badges[i]}
-                    active={i === selected}
-                    onSelect={() => setSelected(i)}
-                    onHover={(on) => setHovered(on ? i : -1)}
-                  />
+              <section
+                className="results"
+                aria-busy={state.status === "loading"}
+              >
+                <div className="results-title">
+                  <div>
+                    <h2>
+                      {from.name} <span>→</span> {to.name}
+                    </h2>
+                    <p>
+                      {dateLabel} · {adults}{" "}
+                      {adults === 1 ? "traveler" : "travelers"} · economy
+                    </p>
+                  </div>
+                  <button
+                    className={`icon-button save-button ${isSaved ? "saved" : ""}`}
+                    aria-label={isSaved ? "Update saved trip" : "Save this trip"}
+                    onClick={saveTrip}
+                  >
+                    <Icon name="heart" />
+                  </button>
+                </div>
+                {(mode === "all" || mode === "plane") &&
+                  !state.journeys.some((j) => j.mode === "plane") &&
+                  links.find((l) => l.mode === "plane") && (
+                    <a
+                      className="flight-handoff"
+                      href={links.find((l) => l.mode === "plane").url}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      <span className="mode-square flight">
+                        <Icon name="plane" />
+                      </span>
+                      <span>
+                        <strong>Explore flight prices</strong>
+                        <small>
+                          {flightProvider?.status === "not_configured"
+                            ? "Compare on Skyscanner · live fares aren’t connected here yet"
+                            : "Compare this trip directly on Skyscanner"}
+                        </small>
+                      </span>
+                      <Icon name="external" size={17} />
+                    </a>
+                  )}
+                {stale && (
+                  <div className="search-notice">
+                    <Icon name="info" size={17} />
+                    Your trip changed. Select “Find my way” to update results.
+                  </div>
+                )}
+                <div aria-live="polite">
+                  {!stale && (state.status === "error" || state.status === "cancelled") && (
+                    <div className={`search-notice ${state.status === "error" ? "error" : ""}`}>
+                      <span>{state.message}</span>
+                      <button className="text-link" disabled={retryIn > 0} onClick={() => run()}>{retryIn ? `Retry in ${retryIn}s` : "Search again"}</button>
+                    </div>
+                  )}
+                </div>
+                {!stale && <SearchProgress providers={state.providers} mode={mode} loading={state.status === "loading"} onRetry={(id) => run({ retryProvider: id })} retryIn={retryIn} />}
+                {!stale && journeys.length > 0 && (
+                  <>
+                    <div className="sort-row">
+                      <span>
+                        {journeys.length}{" "}
+                        {mode === "plane" ? "flight" : "journey"}{" "}
+                        {journeys.length === 1 ? "option" : "options"}
+                      </span>
+                      <select
+                        aria-label="Sort journeys"
+                        value={sort}
+                        onChange={(e) => setSort(e.target.value)}
+                      >
+                        <option value="fastest">Fastest first</option>
+                        <option value="cheapest">Lowest known fare</option>
+                      </select>
+                    </div>
+                    {sort === "cheapest" && (
+                      <p className="micro-note">
+                        Only known EUR fares are ranked by price. Transfers and
+                        bags may cost extra.
+                      </p>
+                    )}
+                    {journeys.slice(0, visibleCount).map((j) => (
+                      <JourneyCard
+                        key={j.id}
+                        journey={j}
+                        ribbon={ribbons[j.id]}
+                        active={selected === j.id}
+                        onSelect={() => {
+                          setSelected(j.id);
+                          setModal("journey");
+                        }}
+                      />
+                    ))}
+                    {journeys.length > 3 && (
+                      <button
+                        className="show-more"
+                        onClick={() => setVisibleCount(visibleCount >= journeys.length ? 3 : Math.min(journeys.length, visibleCount + 8))}
+                      >
+                        {visibleCount >= journeys.length
+                          ? "Show fewer options"
+                          : `Show ${Math.min(8, journeys.length - visibleCount)} more options`}{" "}
+                        <Icon name="chevron" size={14} />
+                      </button>
+                    )}
+                    {journeys.some((j) => j.mode === "train") && (
+                      <p className="micro-note rail-scope">
+                        Rail times are station to station. City transfers aren’t
+                        included. The colored strip shows computed daylight on a
+                        shared time scale.
+                      </p>
+                    )}
+                  </>
+                )}
+                {!stale && state.status === "done" && journeys.length === 0 && (
+                  <p className="micro-note empty-result">
+                    {mode === "all"
+                      ? "No timetable or live-fare options were returned."
+                      : `No ${{ plane: "flight", train: "train", bus: "bus", metro: "metro" }[mode]} results for this search.`}{" "}
+                    Explore the providers below.
+                  </p>
+                )}
+                {!stale && state.searchedAt && <p className="search-time">Search completed at {new Date(state.searchedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}. Timetable retrieval dates appear below.</p>}
+                {(mode === "bus" || mode === "metro") && <p className="search-notice">{mode === "bus" ? "Coach" : "Local transit"} options open in the provider’s planner. Check the date, connections and ticket price there.</p>}
+                <div className="provider-heading">
+                  <span>CHECK WITH THE SOURCE</span>
+                  <span>NO MARKUP</span>
+                </div>
+                {links
+                  .filter((l) => mode === "all" || l.mode === mode)
+                  .filter(
+                    (l) =>
+                      l.id !== "skyscanner" ||
+                      state.journeys.some((j) => j.mode === "plane"),
+                  )
+                  .map((link) => (
+                    <a
+                      key={link.id}
+                      className={`provider-card provider-${link.mode}`}
+                      href={link.url}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      <div className="provider-icon">
+                        <Icon
+                          name={
+                            link.mode === "plane"
+                              ? "plane"
+                              : link.mode === "train"
+                                ? "train"
+                                : "bus"
+                          }
+                          size={22}
+                        />
+                      </div>
+                      <div className="provider-copy">
+                        <strong>
+                          {link.mode === "plane"
+                            ? "Start with flights"
+                            : link.mode === "train"
+                              ? "Take the scenic route"
+                              : link.mode === "metro" ? "Find local bus & metro" : "Compare coach connections"}
+                        </strong>
+                        <span>
+                          {link.name} ·{" "}
+                          {link.prefilled
+                            ? "Your route is ready"
+                            : "Check route and date"}
+                        </span>
+                      </div>
+                      <Icon name="external" size={16} />
+                    </a>
+                  ))}
+                <div className="honesty-note">
+                  <Icon name="info" size={16} />
+                  <p>
+                    Fares are checked with the provider. We’ll only call
+                    something “cheapest” when we can compare real prices.
+                  </p>
+                </div>
+              </section>
+              <section className="last-mile">
+                <div>
+                  <span className="eyebrow">
+                    THE LAST FEW KILOMETERS MATTER
+                  </span>
+                  <h2>Airport ≠ city center.</h2>
+                  <p>
+                    Compare nearby airports and plan the bus or metro before you
+                    book.
+                  </p>
+                </div>
+                <button
+                  aria-label="Compare airports and city transfers"
+                  onClick={() => setModal("airports")}
+                >
+                  <Icon name="arrow" />
+                </button>
+              </section>
+              <div className="pane-footer">
+                <span>
+                  <Icon name="check" size={13} /> No sponsored ranking
+                </span>
+                <button onClick={() => setModal("sources")}>
+                  Data & coverage
+                </button>
+              </div>
+              <div className="attribution">
+                {sourceRows.map((s) => (
+                  <p key={s.id}>
+                    {s.attribution || s.name}
+                    {(s.retrievedAt || s.updatedAt) &&
+                      ` · Retrieved ${(s.retrievedAt || s.updatedAt).slice(0, 10)}`}
+                  </p>
                 ))}
               </div>
-
-              <Detail journey={active} />
             </>
           )}
         </main>
-
-        <aside className="globe-pane">
-          <Globe
-            journeys={journeys}
-            activeIndex={hovered >= 0 ? hovered : selected}
-            reduced={reduced}
-          />
+        <aside className="map-pane" aria-label="Interactive journey map">
+          <div className="map-view-switch">
+            <button
+              className={view === "map" ? "active" : ""}
+              onClick={() => setView("map")}
+            >
+              <Icon name="pin" size={14} />
+              Map
+            </button>
+            <button
+              className={view === "globe" ? "active" : ""}
+              onClick={() => setView("globe")}
+            >
+              <Icon name="globe" size={15} />
+              Globe
+            </button>
+          </div>
+          {view === "map" ? (
+            <AtlasMap
+              from={from}
+              to={to}
+              cities={mapCities}
+              mode={mode === "all" ? "plane" : mode}
+              onPick={(p) => {
+                if (p.name !== from.name) {
+                  setTo(p);
+                  setTab("explore");
+                  notify(`${p.name} selected. Find your way to check options.`);
+                }
+              }}
+            />
+          ) : (
+            <div className="globe-view">
+              <Suspense
+                fallback={
+                  <div className="globe-loading">Opening the world…</div>
+                }
+              >
+                <Globe
+                  journeys={
+                    active
+                      ? [active]
+                      : [{ legs: [{ mode: "plane", from, to }] }]
+                  }
+                  activeIndex={0}
+                  reduced={
+                    window.matchMedia("(prefers-reduced-motion: reduce)")
+                      .matches
+                  }
+                />
+              </Suspense>
+              <div className="globe-caption">
+                {from.name} → {to.name}
+                <small>
+                  {active
+                    ? "Selected timetable · lines connect published stops"
+                    : "Search corridor · availability unconfirmed"}
+                </small>
+              </div>
+            </div>
+          )}
+          <div className="map-bottom-card">
+            <span className="discovery-icon">
+              <Icon name="compass" size={24} />
+            </span>
+            <div>
+              <strong>A place in mind? A whole world around it.</strong>
+              <p>Pick a city on the map to make it your next stop.</p>
+            </div>
+            <span className="map-card-mark">↗</span>
+          </div>
         </aside>
       </div>
-
-      <footer>
-        <p>
-          {/* Feeds from one publisher share an attribution string; printing it
-              once per feed would repeat it. EU Delegated Regulation 2017/1926
-              Art. 8(3) requires the source AND the last-update time. */}
-          {[...new Set((state.sources ?? []).map((s) => s.attribution))].join(' · ')}
-          {state.generatedAt && ` · Timetable data retrieved ${state.generatedAt.slice(0, 10)}`}
-        </p>
-        <p>Schedules are not tickets. Confirm times and buy with the operator.</p>
-      </footer>
+      {toast && (
+        <div className="toast" role="status">
+          <Icon name="check" size={17} />
+          {toast}
+        </div>
+      )}
+      <button
+        className="mobile-surface-toggle"
+        onClick={() => setMobileMap((v) => !v)}
+      >
+        <Icon name={mobileMap ? "train" : "globe"} size={17} />
+        {mobileMap ? "Trip planner" : "Explore the map"}
+      </button>
+      {modal === "about" && (
+        <Modal title="Travel freely. Really." onClose={() => setModal(null)}>
+          <div className="modal-body">
+            <span className="large-icon">
+              <Icon name="plane" size={36} />
+            </span>
+            <p>
+              A small, independent travel planner for people with more curiosity
+              than cash.
+            </p>
+            <p>
+              Compare flights and trains, check the journey into town, and leave
+              room in your budget for the actual trip.
+            </p>
+            <ul className="promise-list">
+              <li>
+                <Icon name="check" />
+                No sponsored ranking or booking markup.
+              </li>
+              <li>
+                <Icon name="check" />
+                Unknown prices stay unknown.
+              </li>
+              <li>
+                <Icon name="check" />
+                Your saved plans stay on your device.
+              </li>
+            </ul>
+            <p className="micro-note">
+              Built on Nightjet Atlas. This beta sends your search to configured
+              travel providers and stores saved trips locally. No accounts,
+              advertising trackers, or payments.
+            </p>
+            <a
+              className="text-link"
+              href="https://github.com/windcrash64/nightjet-atlas"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Explore the open-source project <Icon name="external" size={15} />
+            </a>
+          </div>
+        </Modal>
+      )}
+      {modal === "budget" && (
+        <Modal
+          title="Give the whole trip a budget."
+          onClose={() => setModal(null)}
+        >
+          <div className="modal-body">
+            <p>
+              A cheap ticket is only part of the story. Add the costs you find
+              to see what’s really left.
+            </p>
+            <label className="budget-limit">
+              Total travel budget{" "}
+              <span>
+                EUR · for all {adults} {adults === 1 ? "traveler" : "travelers"}
+              </span>
+              <input
+                type="number"
+                min="0"
+                max="1000000"
+                value={budget}
+                onChange={(e) => setBudget(Math.min(1000000, Math.max(0, Number(e.target.value) || 0)))}
+              />
+            </label>
+            <label className="bag-select">
+              What are you bringing?
+              <select value={bag} onChange={(e) => setBag(e.target.value)}>
+                <option value="backpack">
+                  Just a backpack / personal item
+                </option>
+                <option value="cabin">A cabin bag</option>
+                <option value="checked">Checked luggage</option>
+              </select>
+            </label>
+            <p className="micro-note">
+              Baggage rules vary. This preference doesn’t imply a bag is
+              included in a fare.
+            </p>
+            <div className="cost-fields">
+              {[
+                ["fare", "Tickets"],
+                ["baggage", "Bags"],
+                ["originTransfer", "Getting to the station / airport"],
+                ["destinationTransfer", "Getting into town"],
+              ].map(([key, label]) => (
+                <label key={key}>
+                  {label}
+                  <span>
+                    €
+                    <input
+                      aria-label={`${label} cost in EUR`}
+                      type="number"
+                      min="0"
+                      max="1000000"
+                      step=".01"
+                      placeholder="Unknown"
+                      value={costs[key]}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        if (value !== "" && (!Number.isFinite(Number(value)) || Number(value) < 0 || Number(value) > 1000000)) return;
+                        if (!hasCosts(costs)) setCostsKey(inputKey);
+                        setCosts((c) => ({ ...c, [key]: value }));
+                      }}
+                    />
+                  </span>
+                </label>
+              ))}
+            </div>
+            {costsStale && <div className="budget-review" role="status">
+              <strong>Review estimates for this trip</strong>
+              <p>These figures came from a different route, date or traveler count. Check each amount before using the total.</p>
+              <button className="text-link" onClick={() => setCostsKey(inputKey)}>Use these estimates for this trip <Icon name="check" size={15} /></button>
+            </div>}
+            {!costsStale && <div className="budget-result">
+              <span>
+                {total == null ? "Known costs so far" : "Your entered total"}
+              </span>
+              <strong>{money(total ?? knownCosts)}</strong>
+              <div className="budget-track">
+                <i
+                  style={{
+                    width: `${Math.min(100, budget > 0 ? (knownCosts / budget) * 100 : 100)}%`,
+                  }}
+                />
+              </div>
+              <p>
+                {total == null
+                  ? "Fill every cost (including zero) for a complete total."
+                  : total <= budget
+                    ? `${money(budget - total)} left in your budget.`
+                    : `${money(total - budget)} over your budget.`}
+              </p>
+            </div>}
+            {hasCosts(costs) && <button className="text-link reset-costs" onClick={() => { setCosts(blankCosts()); setCostsKey(inputKey); }}>Clear estimates</button>}
+            <p className="micro-note">
+              These are your planning figures, not a live quote. Saved trips
+              retain the figures from when you saved them.
+            </p>
+            <button className="primary-button" onClick={() => setModal(null)}>
+              Keep exploring <Icon name="arrow" />
+            </button>
+          </div>
+        </Modal>
+      )}
+      {modal === "airports" && (
+        <Modal
+          title="The airport is only part of it."
+          onClose={() => setModal(null)}
+        >
+          <div className="modal-body">
+            <p>
+              Airport distances are straight-line distances from your selected
+              city. They aren’t transfer times or proof of a flight connection.
+            </p>
+            {[
+              [from, originAirports, "Leaving"],
+              [to, destinationAirports, "Arriving"],
+            ].map(([city, airports, label]) => (
+              <section className="airport-section" key={label}>
+                <h3>
+                  {label} · {city.name}
+                </h3>
+                {airports.map((a) => (
+                  <div className="airport-row" key={a.iata}>
+                    <span className="iata-pill">{a.iata}</span>
+                    <div>
+                      <strong>{a.name}</strong>
+                      <small>
+                        {Math.round(a.distanceKm)} km from selected location
+                      </small>
+                    </div>
+                    <a
+                      aria-label={`Find transit between ${a.name} and ${city.name}`}
+                      href={`https://www.google.com/maps/dir/?api=1&origin=${label === "Leaving" ? `${city.lat},${city.lon}` : `${a.lat},${a.lon}`}&destination=${label === "Leaving" ? `${a.lat},${a.lon}` : `${city.lat},${city.lon}`}&travelmode=transit`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      <Icon name="external" size={17} />
+                    </a>
+                  </div>
+                ))}
+              </section>
+            ))}
+            <div className="search-notice">
+              <Icon name="bus" size={18} />
+              <span>
+                Check the local metro or bus, first and last departures, and
+                separate ticket costs. Transfer routing opens in Google Maps.
+              </span>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {modal === "sources" && (
+        <Modal
+          title="Know what you’re looking at."
+          onClose={() => setModal(null)}
+        >
+          <div className="modal-body">
+            <p>
+              Availability depends on the route, date, and data connection. A
+              map line is a search corridor, not a scheduled flight.
+            </p>
+            {state.providers.map((p) => (
+              <div className="source-row" key={p.id}>
+                <strong>
+                  {p.id === "skyscanner"
+                    ? "Flights · Skyscanner"
+                    : p.id === "rail"
+                      ? "Rail timetables"
+                      : p.id}
+                </strong>
+                <span
+                  className={`source-status ${p.status === "ok" ? "ready" : ""}`}
+                >
+                  {p.status.replaceAll("_", " ")}
+                </span>
+                <p>{p.message}</p>
+              </div>
+            ))}
+            <p>
+              Flights need approved live-price access. Bus and metro options
+              currently open the provider’s planner; they aren’t included in an
+              end-to-end timetable.
+            </p>
+            <p>
+              Map: Natural Earth. Airports: OurAirports, public domain. Rail
+              sources and retrieval dates are shown with timetable results.
+            </p>
+            {sourceRows.map((s) => (
+              <div className="source-row" key={s.id}>
+                <strong>{s.publisher || s.name}</strong>
+                <p>{s.attribution}</p>
+                <p>
+                  Retrieved{" "}
+                  {(
+                    s.retrievedAt ||
+                    s.updatedAt ||
+                    railProvider.generatedAt
+                  )?.slice(0, 10)}{" "}
+                  · {s.license || s.licence}
+                </p>
+                {s.url && (
+                  <a
+                    className="text-link"
+                    href={s.url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Source data <Icon name="external" size={14} />
+                  </a>
+                )}
+                {s.licenceUrl && (
+                  <a
+                    className="text-link"
+                    href={s.licenceUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    License <Icon name="external" size={14} />
+                  </a>
+                )}
+              </div>
+            ))}
+            <p className="micro-note">
+              Reconfirm schedules, fare conditions, luggage and any student
+              eligibility before booking. Separate tickets may leave you
+              responsible for a missed connection.
+            </p>
+          </div>
+        </Modal>
+      )}
+      {modal === "journey" && active && (
+        <Modal
+          title={`${from.name} to ${to.name}`}
+          onClose={() => setModal(null)}
+        >
+          <div className="modal-body">
+            <div className="detail-summary">
+              <strong>{formatDuration(active.durationMinutes)}</strong>
+              <span>
+                {active.changes == null
+                  ? "Changes unconfirmed"
+                  : active.changes === 0
+                    ? "Direct journey"
+                    : `${active.changes} changes`}
+              </span>
+            </div>
+            <p className="micro-note">
+              {active.timeBasis === "airport_local"
+                ? "Times are local to each airport. The displayed duration excludes airport transfers, check-in and security."
+                : "Times follow the timetable’s local clock (Central Europe for the bundled rail feed). City transfers are excluded."}
+            </p>
+            <ol className="itinerary">
+              {active.legs?.map((leg, i) => (
+                <li key={i}>
+                  <span className="timeline-dot" />
+                  <div>
+                    <strong>
+                      {leg.service ||
+                        leg.operator ||
+                        ({ walk: "Walk / transfer", plane: "Flight", train: "Train", bus: "Bus", metro: "Metro" }[leg.mode] || "Transit")}
+                    </strong>
+                    <p>
+                      {leg.from?.name} → {leg.to?.name}
+                    </p>
+                    <small>{legTime(leg)}</small>
+                  </div>
+                </li>
+              ))}
+            </ol>
+            {active.notes?.map((note, i) => (
+              <p key={i} className="micro-note">
+                {note}
+              </p>
+            ))}
+            {active.transferType &&
+              active.transferType !== "TRANSFER_TYPE_MANAGED" && (
+                <p className="search-notice">
+                  Check connection protection with the seller. This option may
+                  involve a self-transfer or separate tickets.
+                </p>
+              )}
+            <p className="search-notice">
+              {active.price
+                ? `Provider fare: ${new Intl.NumberFormat("en-IE", { style: "currency", currency: active.price.currency }).format(active.price.amount)}. Confirm baggage and transfers before booking.`
+                : "This timetable has no ticket price. Check fares with the operator."}
+            </p>
+            {active.bookingUrl && (
+              <a
+                className="primary-button"
+                href={active.bookingUrl}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Check with the provider <Icon name="external" size={17} />
+              </a>
+            )}
+            {!active.bookingUrl && active.bookingLinks?.length > 0 && (
+              <div>
+                <p className="search-notice">
+                  This option needs separate bookings. Confirm every ticket and
+                  leave enough time for each connection before paying.
+                </p>
+                {active.bookingLinks.map((link, i) => (
+                  <a
+                    key={i}
+                    className="primary-button"
+                    href={link.url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Booking {i + 1} · {link.agent || "Provider"}{" "}
+                    <Icon name="external" size={16} />
+                  </a>
+                ))}
+              </div>
+            )}
+            {!active.bookingUrl && !active.bookingLinks?.length && (
+              <a
+                className="primary-button"
+                href={
+                  links.find((l) => l.mode === active.mode)?.url ||
+                  "https://int.bahn.de/en"
+                }
+                target="_blank"
+                rel="noreferrer"
+              >
+                Check fares with the operator <Icon name="external" size={16} />
+              </a>
+            )}
+            {active.sources?.map((s) => (
+              <p className="micro-note" key={s.id}>
+                {s.attribution || s.name} · Retrieved{" "}
+                {(
+                  s.retrievedAt ||
+                  s.updatedAt ||
+                  active.source?.generatedAt
+                )?.slice(0, 10)}
+              </p>
+            ))}
+            <p className="micro-note">
+              {active.source?.name}
+              {active.source?.fetchedAt
+                ? ` · Retrieved ${active.source.fetchedAt.slice(0, 10)}`
+                : ""}
+            </p>
+            {active.source?.url && (
+              <a
+                className="text-link"
+                href={active.source.url}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Timetable source <Icon name="external" size={14} />
+              </a>
+            )}
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

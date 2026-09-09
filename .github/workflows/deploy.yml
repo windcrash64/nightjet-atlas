@@ -1,0 +1,68 @@
+name: Refresh timetable and deploy Travel Freely
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 5 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: travel-freely-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Require the reviewed production branch
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/master" ]; then
+            echo "::error::Run this workflow from master after merging the reviewed Travel Freely changes."
+            exit 1
+          fi
+
+      - name: Check out the triggering master commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Refresh and validate the publisher timetable
+        run: npm run data:edge -- --force
+
+      - name: Run frontend, Worker, and pipeline checks
+        run: npm run check
+
+      - name: Package Worker and Static Assets
+        run: npm run build:cloudflare
+
+      - name: Validate Wrangler configuration without deploying
+        run: npx --no-install wrangler deploy --dry-run --outdir "$RUNNER_TEMP/wrangler-check"
+
+      - name: Deploy and verify assets, build identity, routes, and real rail search
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_DEPLOYMENT_RECEIPT: ${{ runner.temp }}/travel-freely-deployment.json
+        run: node scripts/deploy-cloudflare.mjs deploy
+
+      - name: Retain the nonsecret deployment and rollback receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: travel-freely-deployment-${{ github.run_id }}
+          path: ${{ runner.temp }}/travel-freely-deployment.json
+          if-no-files-found: ignore
+          retention-days: 30

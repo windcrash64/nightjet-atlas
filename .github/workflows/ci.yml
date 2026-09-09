@@ -1,0 +1,36 @@
+name: Validate Travel Freely
+
+on:
+  pull_request:
+  push:
+    branches: [master, 'codex/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: travel-freely-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Fetch and validate the published timetable
+        run: npm run data:edge
+      - name: Run frontend, Worker, and pipeline checks
+        run: npm run check
+      - name: Build both Cloudflare package strategies
+        run: npm run build:cloudflare -- --bundled-assets
+      - name: Validate Wrangler configuration without deploying
+        run: npx --no-install wrangler deploy --dry-run --outdir "$RUNNER_TEMP/wrangler-check"
