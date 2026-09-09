@@ -199,6 +199,20 @@ export function providerLinks(from, to, date, options = {}) {
   links.push({ id: 'flixbus', name: 'FlixBus', label: 'Open FlixBus', mode: 'bus',
     url: 'https://global.flixbus.com/', prefilled: false,
     note: 'Enter your route and date on FlixBus to check whether service is available.' });
+  // Maps URLs support route coordinates and transit mode, but do not carry
+  // our selected departure date/time or guarantee a metro-only itinerary.
+  const transit = new URL('https://www.google.com/maps/dir/');
+  transit.searchParams.set('api', '1');
+  transit.searchParams.set('travelmode', 'transit');
+  const hasCoordinates = [origin, destination].every(place => place
+    && validCoordinate(place.lat, 90) && validCoordinate(place.lon, 180));
+  if (hasCoordinates) {
+    transit.searchParams.set('origin', `${origin.lat},${origin.lon}`);
+    transit.searchParams.set('destination', `${destination.lat},${destination.lon}`);
+  }
+  links.push({ id: 'google-transit', name: 'Google Maps', label: 'Open Google Maps transit', mode: 'metro',
+    url: transit.href, prefilled: false,
+    note: `${hasCoordinates ? 'Route coordinates are included.' : 'Enter your route in Google Maps.'} Choose the date and time in Google Maps. Transit may include buses, trains or metro; check availability and fares there.` });
   return links;
 }
 

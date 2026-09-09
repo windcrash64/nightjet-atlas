@@ -1,5 +1,5 @@
 /** Standard Cloudflare Static Assets deploy, with connector-compatible pieces.
- * Fully automated CI: CLOUDFLARE_ACCOUNT_ID=... CLOUDFLARE_API_TOKEN=... node scripts/deploy-cloudflare.mjs
+ * Fully automated CI: npm run deploy (requires Cloudflare credentials in the environment).
  * Connector: `manifest` emits public manifest; create upload session with the connector;
  * `upload-assets` reads one JSON line {accountId,jwt,buckets} from stdin, writes one
  * JSON line {jwt} for the caller to capture (a short-lived completion credential).
@@ -8,37 +8,63 @@
  * `verify-tail` accepts {url,tailUrl,date?}; its date follows the same convention.
  * Never save either JWT output to a repository file or display it to the traveler.
  */
-import { readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { assetHash, ROOT, OUT } from './build-cloudflare.mjs';
+import { inside, sha256, sourceFingerprint } from './cloudflare-package.mjs';
 
 const API = 'https://api.cloudflare.com/client/v4';
 const accountPattern = /^[a-f0-9]{32}$/;
 const scriptPattern = /^[a-z0-9][a-z0-9_-]{0,62}$/;
 
-function readPackage() {
-  const summary = JSON.parse(readFileSync(join(OUT, 'package-summary.json'), 'utf8'));
-  const files = JSON.parse(readFileSync(join(OUT, 'asset-files.json'), 'utf8'));
-  const manifest = JSON.parse(readFileSync(join(OUT, 'asset-manifest.json'), 'utf8'));
+export function readPackage({ root = ROOT, out = join(root, 'worker', '.build') } = {}) {
+  const summary = JSON.parse(readFileSync(join(out, 'package-summary.json'), 'utf8'));
+  if (summary.schemaVersion !== 2 || !/^[a-f0-9]{64}$/.test(summary.buildId || '')) throw new Error('Rebuild the deployment package using npm run build:cloudflare.');
   if (!scriptPattern.test(summary.name)) throw new Error('Invalid Worker name.');
-  return { summary, files, manifest };
+  if (sourceFingerprint(root) !== summary.sourceFingerprint) throw new Error('Deployment sources changed after packaging. Run npm run build:cloudflare again.');
+  const required = ['worker.mjs', 'asset-files.json', 'asset-manifest.json', 'worker-metadata.json', 'headers.json'];
+  if (summary.bundled) required.push('worker-bundled.mjs', 'worker-bundled-metadata.json', 'wrangler-bundled.json');
+  if (!summary.integrity || required.some((path) => !summary.integrity[path])) throw new Error('Incomplete deployment package.');
+  for (const [path, hash] of Object.entries(summary.integrity)) {
+    if (sha256(readFileSync(inside(out, path))) !== hash) throw new Error('A deployment package file changed after the build.');
+  }
+  const files = JSON.parse(readFileSync(join(out, 'asset-files.json'), 'utf8'));
+  const manifest = JSON.parse(readFileSync(join(out, 'asset-manifest.json'), 'utf8'));
+  if (!Array.isArray(files) || files.length !== summary.assetCount || Object.keys(manifest).length !== files.length) throw new Error('Asset manifest does not match the package.');
+  const paths = new Set();
+  for (const file of files) {
+    if (!file.path?.startsWith('/') || paths.has(file.path) || file.packagePath !== 'assets/' + file.path.slice(1)) throw new Error('Invalid asset package path.');
+    paths.add(file.path);
+    const bytes = readFileSync(inside(out, file.packagePath));
+    if (bytes.length !== file.size || assetHash(bytes, file.path) !== file.hash || sha256(bytes) !== file.sha256
+      || manifest[file.path]?.hash !== file.hash || manifest[file.path]?.size !== file.size) throw new Error('An asset changed after packaging. Build a new package before deploying.');
+    file.localPath = inside(out, file.packagePath);
+  }
+  return { summary, files, manifest, root, out, headers: JSON.parse(readFileSync(join(out, 'headers.json'), 'utf8')) };
 }
 
 async function api(path, options, credential) {
   const response = await fetch(API + path, { ...options, headers: { authorization: `Bearer ${credential}`, ...options.headers }, redirect: 'error', signal: AbortSignal.timeout(60_000) });
-  const body = await response.json();
-  if (!response.ok || !body.success) {
+  let body;
+  try { body = await response.json(); } catch {
+    const error = new Error(`Cloudflare returned an unreadable response: HTTP ${response.status}.`);
+    error.status = response.status;
+    throw error;
+  }
+  if (!response.ok || !body?.success) {
     // Cloudflare messages can reflect request data; only stable error codes leave this helper.
-    const codes = Array.isArray(body.errors) ? body.errors.map((entry) => entry.code).filter((code) => typeof code === 'number').join(',') : '';
-    throw new Error(`Cloudflare request failed: HTTP ${response.status}${codes ? ` (codes ${codes})` : ''}.`);
+    const codes = Array.isArray(body?.errors) ? body.errors.map((entry) => entry.code).filter((code) => typeof code === 'number').join(',') : '';
+    const error = new Error(`Cloudflare request failed: HTTP ${response.status}${codes ? ` (codes ${codes})` : ''}.`);
+    error.status = response.status;
+    throw error;
   }
   return body.result;
 }
 
-export async function uploadAssets(session, fetchApi = api) {
+export async function uploadAssets(session, fetchApi = api, packaged = readPackage()) {
   if (!accountPattern.test(session?.accountId || '') || typeof session?.jwt !== 'string' || !session.jwt || !Array.isArray(session.buckets)) throw new Error('A valid account and asset-upload session are required.');
-  const { files } = readPackage();
+  const { files } = packaged;
   const byHash = new Map(files.map((file) => [file.hash, file]));
   if (!session.buckets.length) return session.jwt;
   let completionJwt;
@@ -58,37 +84,77 @@ export async function uploadAssets(session, fetchApi = api) {
   return completionJwt;
 }
 
-export function workerPackage({ bundled = false } = {}) {
-  const { summary } = readPackage();
-  const configuration = JSON.parse(readFileSync(join(ROOT, 'wrangler.jsonc'), 'utf8'));
-  const rates = configuration.ratelimits || [{ name: 'SEARCH_RATE_LIMITER', namespace_id: '1001', simple: { limit: 20, period: 60 } }];
-  const headers = readFileSync(join(ROOT, 'dist', '_headers'), 'utf8');
-  const metadata = { main_module: 'worker.mjs', compatibility_date: summary.compatibilityDate,
-    keep_bindings: ['secret_text', 'plain_text'], bindings: [
-      ...(!bundled ? [{ type: 'assets', name: 'ASSETS' }] : []),
-      ...rates.map((binding) => ({ type: 'ratelimit', ...binding })),
-      ...Object.entries(configuration.vars || {}).map(([name, value]) => typeof value === 'string' ? { type: 'plain_text', name, text: value } : { type: 'json', name, json: value }),
-    ],
-    observability: { enabled: false },
-    ...(!bundled ? { assets: { config: { not_found_handling: 'single-page-application', run_worker_first: ['/api/*'], _headers: headers } } } : {}),
-  };
-  return { name: summary.name, metadata, code: readFileSync(join(OUT, bundled ? 'worker-bundled.mjs' : 'worker.mjs'), 'utf8') };
+export function workerPackage({ bundled = false, packaged = readPackage() } = {}) {
+  const { summary, out } = packaged;
+  if (bundled && !summary.bundled) throw new Error('This build does not include bundled assets. Rebuild with --bundled-assets.');
+  const metadata = JSON.parse(readFileSync(join(out, bundled ? 'worker-bundled-metadata.json' : 'worker-metadata.json'), 'utf8'));
+  return { name: summary.name, metadata, code: readFileSync(join(out, bundled ? 'worker-bundled.mjs' : 'worker.mjs'), 'utf8') };
 }
 
-export async function deploy({ accountId, token }) {
+function saveReceipt(path, receipt) {
+  mkdirSync(dirname(resolve(path)), { recursive: true });
+  writeFileSync(path, JSON.stringify(receipt, null, 2) + '\n');
+}
+
+export async function deploy({ accountId, token, receiptPath = process.env.CLOUDFLARE_DEPLOYMENT_RECEIPT || join(OUT, 'deployment-receipt.json'), fetchApi = api, verify = verifyDeployment, packaged = readPackage(), writeReceipt = saveReceipt }) {
   if (!accountPattern.test(accountId || '') || !token) throw new Error('Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for CI deployment.');
-  const { summary, manifest } = readPackage();
-  const session = await api(`/accounts/${accountId}/workers/scripts/${summary.name}/assets-upload-session`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ manifest }) }, token);
-  const jwt = await uploadAssets({ ...session, accountId });
-  const packaged = workerPackage();
-  packaged.metadata.assets.jwt = jwt;
-  const form = new FormData();
-  form.append('metadata', new Blob([JSON.stringify(packaged.metadata)], { type: 'application/json' }));
-  form.append('worker.mjs', new Blob([packaged.code], { type: 'application/javascript+module' }), 'worker.mjs');
-  const uploaded = await api(`/accounts/${accountId}/workers/scripts/${summary.name}`, { method: 'PUT', body: form }, token);
-  await api(`/accounts/${accountId}/workers/scripts/${summary.name}/subdomain`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: true, previews_enabled: false }) }, token);
-  const subdomain = await api(`/accounts/${accountId}/workers/subdomain`, { method: 'GET' }, token);
-  return { name: summary.name, url: `https://${summary.name}.${subdomain.subdomain}.workers.dev`, versionId: uploaded.id || null };
+  const { summary, manifest } = packaged;
+  const endpoint = `/accounts/${accountId}/workers/scripts/${summary.name}`;
+  let previousVersions = [];
+  try {
+    const current = await fetchApi(`${endpoint}/deployments`, { method: 'GET' }, token);
+    if (!Array.isArray(current?.deployments)) throw new Error('Cloudflare did not return deployment history; publishing was stopped.');
+    previousVersions = current.deployments?.[0]?.versions || [];
+  } catch (error) { if (error.status !== 404) throw error; }
+  const subdomain = await fetchApi(`/accounts/${accountId}/workers/subdomain`, { method: 'GET' }, token);
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(subdomain?.subdomain || '')) throw new Error('Cloudflare returned an invalid workers.dev subdomain.');
+  const url = `https://${summary.name}.${subdomain.subdomain}.workers.dev`;
+  const receipt = { schemaVersion: 1, name: summary.name, accountId, url, buildId: summary.buildId, previousVersions, startedAt: new Date().toISOString(), status: 'prepared' };
+  // This nonsecret recovery record exists before the first production mutation.
+  writeReceipt(receiptPath, receipt);
+  try {
+    const session = await fetchApi(`${endpoint}/assets-upload-session`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ manifest }) }, token);
+    const jwt = await uploadAssets({ ...session, accountId }, fetchApi, packaged);
+    readPackage({ root: packaged.root, out: packaged.out });
+    const worker = workerPackage({ packaged });
+    worker.metadata.assets.jwt = jwt;
+    const form = new FormData();
+    form.append('metadata', new Blob([JSON.stringify(worker.metadata)], { type: 'application/json' }));
+    form.append('worker.mjs', new Blob([worker.code], { type: 'application/javascript+module' }), 'worker.mjs');
+    receipt.status = 'publishing'; writeReceipt(receiptPath, receipt);
+    await fetchApi(endpoint, { method: 'PUT', body: form }, token);
+    await fetchApi(`${endpoint}/subdomain`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: true, previews_enabled: false }) }, token);
+    receipt.status = 'verifying'; writeReceipt(receiptPath, receipt);
+    let verification;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { verification = await verify(url, undefined, { packaged }); break; }
+      catch (error) { if (attempt === 2) throw error; await new Promise((done) => setTimeout(done, 3000)); }
+    }
+    const current = await fetchApi(`${endpoint}/deployments`, { method: 'GET' }, token);
+    const deployment = current.deployments?.[0];
+    if (!deployment?.versions?.length) throw new Error('Cloudflare did not return the active deployment versions.');
+    Object.assign(receipt, { status: 'verified', deploymentId: deployment.id, versions: deployment.versions, verification, completedAt: new Date().toISOString() });
+    writeReceipt(receiptPath, receipt);
+    return receipt;
+  } catch (error) {
+    receipt.failedStage = receipt.status; receipt.status = 'failed'; writeReceipt(receiptPath, receipt);
+    throw new Error(`${error.message} Recovery receipt: ${receiptPath}. ${previousVersions.length ? 'To restore the previous deployment, run npm run rollback:cloudflare -- followed by the receipt path.' : 'No previous deployment exists; fix and redeploy the initial release.'}`);
+  }
+}
+
+export async function rollback(receipt, { accountId, token, fetchApi = api } = {}) {
+  if (!accountPattern.test(accountId || '') || !token || receipt?.accountId !== accountId || !scriptPattern.test(receipt?.name || '')) throw new Error('Valid credentials and a matching deployment receipt are required.');
+  const versions = receipt.previousVersions;
+  if (!Array.isArray(versions) || !versions.length || versions.some((version) => !/^[a-f0-9-]{36}$/.test(version.version_id || '') || !Number.isFinite(version.percentage) || version.percentage <= 0)
+    || Math.abs(versions.reduce((sum, version) => sum + version.percentage, 0) - 100) > 0.001) throw new Error('The receipt has no valid previous deployment to restore.');
+  const endpoint = `/accounts/${accountId}/workers/scripts/${receipt.name}/deployments`;
+  const result = await fetchApi(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ strategy: 'percentage', versions: versions.map(({ version_id, percentage }) => ({ version_id, percentage })), annotations: { 'workers/message': 'Restore deployment recorded before Travel Freely release' } }) }, token);
+  const current = await fetchApi(endpoint, { method: 'GET' }, token);
+  const active = current.deployments?.[0];
+  if (!active || active.id !== result.id || active.versions?.length !== versions.length
+    || versions.some((version) => !active.versions.some((entry) => entry.version_id === version.version_id && entry.percentage === version.percentage))) throw new Error('Rollback was requested but the active deployment could not be confirmed. Inspect Cloudflare deployments before taking another action.');
+  return { name: receipt.name, deploymentId: result.id, restoredVersions: versions, status: 'restored' };
 }
 
 export async function readInputLine() {
@@ -103,7 +169,7 @@ export async function readInputLine() {
       if (value.includes('\u0003')) throw new Error('Deployment input cancelled.');
       if (value.includes('\n') || value.includes('\r')) break;
     }
-    return JSON.parse(value.trim());
+    try { return JSON.parse(value.trim()); } catch { throw new Error('Deployment session input must be valid JSON.'); }
   } finally {
     if (process.stdin.isTTY) process.stdin.setRawMode(false);
     process.stdin.pause();
@@ -149,25 +215,78 @@ function assertUnpricedRail(journeys, description) {
   return rail;
 }
 
-export async function verifyDeployment(url, date) {
+export async function verifyDeployment(url, date, { packaged = readPackage(), fetcher = fetch, allowLocal = false } = {}) {
   const origin = new URL(url);
-  if (origin.protocol !== 'https:' || !origin.hostname.endsWith('.workers.dev')) throw new Error('Verify a public HTTPS workers.dev deployment.');
+  const publicOrigin = origin.protocol === 'https:' && /^[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev$/.test(origin.hostname);
+  const localOrigin = allowLocal && origin.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(origin.hostname);
+  if ((!publicOrigin && !localOrigin) || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) throw new Error('Verify a public HTTPS workers.dev origin.');
   const queryDate = diagnosticDate(date);
-  const { files } = readPackage();
-  const checked = await Promise.all(files.map(async (file) => {
-    const response = await fetch(new URL(file.path, origin), { signal: AbortSignal.timeout(20_000) });
+  const { files, summary, headers: rules } = packaged;
+  const request = async (path, options = {}) => {
+    let address = new URL(path, origin);
+    for (let redirects = 0; redirects < 4; redirects++) {
+      const response = await fetcher(address, { ...options, redirect: 'manual', signal: AbortSignal.timeout(30_000) });
+      if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+      void response.body?.cancel().catch(() => {});
+      const location = response.headers.get('location');
+      if (!location || (options.method && options.method !== 'GET')) throw new Error('Unexpected public API redirect.');
+      address = new URL(location, address);
+      if (address.origin !== origin.origin) throw new Error('Public asset redirected to a different origin.');
+    }
+    throw new Error('Too many public asset redirects.');
+  };
+  const staticHeaders = (response, path) => {
+    const expected = new Map();
+    for (const rule of rules) {
+      const [prefix, suffix] = rule.path.split('*');
+      if (rule.path.includes('*') ? path.startsWith(prefix) && path.endsWith(suffix) : path === rule.path) {
+        for (const [name, value] of Object.entries(rule.headers)) expected.set(name, expected.has(name) ? `${expected.get(name)}, ${value}` : value);
+      }
+    }
+    for (const [name, value] of expected) if (response.headers.get(name) !== value) throw new Error(`Incorrect public security or caching header: ${name} on ${path}.`);
+  };
+  const apiHeaders = (response) => {
+    for (const [name, value] of Object.entries({ 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY' })) {
+      if (response.headers.get(name) !== value) throw new Error(`Incorrect public API header: ${name}.`);
+    }
+    if (!response.headers.get('content-type')?.startsWith('application/json')) throw new Error('The public API returned an incorrect content type.');
+  };
+  const checked = [];
+  let nextAsset = 0;
+  await Promise.all(Array.from({ length: Math.min(6, files.length) }, async () => {
+    while (nextAsset < files.length) {
+    const file = files[nextAsset++];
+    const response = await request(file.path);
     if (!response.ok) throw new Error(`Public asset returned HTTP ${response.status}: ${file.path}`);
     if (!response.headers.get('content-type')?.startsWith(file.mime.split(';')[0])) throw new Error(`Incorrect public MIME type: ${file.path}`);
+    staticHeaders(response, file.path);
     const bytes = Buffer.from(await response.arrayBuffer());
     if (assetHash(bytes, file.path) !== file.hash) throw new Error(`Public asset differs from the approved build: ${file.path}`);
-    return file.path;
+    checked.push(file.path);
+    }
   }));
-  const healthResponse = await fetch(new URL('/api/health', origin), { signal: AbortSignal.timeout(20_000) });
+  const spa = await request('/trip/verification');
+  staticHeaders(spa, '/trip/verification');
+  const index = files.find((file) => file.path === '/index.html');
+  if (!spa.ok || !index || assetHash(Buffer.from(await spa.arrayBuffer()), index.path) !== index.hash) throw new Error('The public application route does not serve this build.');
+  const healthResponse = await request('/api/health');
+  apiHeaders(healthResponse);
   const health = await healthResponse.json();
-  if (!healthResponse.ok || !health.ok) throw new Error('Public API health failed.');
-  const query = { from: { name: 'Berlin', lat: 52.52, lon: 13.405, iata: 'BER' }, to: { name: 'Munich', lat: 48.137, lon: 11.575, iata: 'MUC' }, date: queryDate, adults: 1, cabin: 'economy', modes: ['plane', 'train', 'bus', 'metro'] };
+  if (!healthResponse.ok || health.ok !== true || health.service !== 'Travel Freely' || health.buildId !== summary.buildId
+    || !health.providers?.some((provider) => provider.id === 'rail' && provider.configured)) throw new Error('Public API health or deployed build identity failed.');
+  for (const [path, options, status] of [
+    ['/api/unknown', {}, 404], ['/api/plan', {}, 405], ['/api/health', { method: 'POST' }, 405],
+    ['/api/plan', { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://example.invalid' }, body: '{}' }, 403],
+  ]) {
+    const response = await request(path, options);
+    apiHeaders(response);
+    if (response.status !== status || !(await response.json()).error) throw new Error('Public API route or request validation failed.');
+  }
+  // Train-only diagnostics never trigger a configured paid flight provider.
+  const query = { from: { name: 'Berlin', lat: 52.52, lon: 13.405, iata: 'BER' }, to: { name: 'Munich', lat: 48.137, lon: 11.575, iata: 'MUC' }, date: queryDate, adults: 1, cabin: 'economy', modes: ['train'] };
   const plan = async (body) => {
-    const response = await fetch(new URL('/api/plan', origin), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(30_000) });
+    const response = await request('/api/plan', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    apiHeaders(response);
     const result = await response.json();
     if (!response.ok) throw new Error(`Public journey search failed: HTTP ${response.status}.`);
     if (/x-api-key|sessionToken|SKYSCANNER_API_KEY|Bearer /i.test(JSON.stringify(result))) throw new Error('An internal credential field appeared in a public response.');
@@ -184,7 +303,12 @@ export async function verifyDeployment(url, date) {
   }
   const uncovered = await plan({ ...query, from: { name: 'Tokyo', lat: 35.6762, lon: 139.6503, iata: 'TYO' }, modes: ['train'] });
   if (uncovered.journeys.length || uncovered.providers[0]?.status !== 'empty') throw new Error('An uncovered origin returned timetable results.');
-  return { url: origin.origin, date: queryDate, verifiedAssets: checked.length, health: true, railJourneys: rail.length, railFares: 'unknown', fastestMinutes: Math.min(...rail.map((journey) => journey.durationMinutes)),
+  const streamed = await request('/api/plan', { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' }, body: JSON.stringify(query) });
+  if (!streamed.ok || !streamed.headers.get('content-type')?.startsWith('application/x-ndjson') || streamed.headers.get('cache-control') !== 'no-store') throw new Error('Public streaming search failed.');
+  const events = (await streamed.text()).trim().split('\n').map((line) => JSON.parse(line));
+  if (events[0]?.type !== 'start' || events.at(-1)?.type !== 'complete') throw new Error('Public streaming search did not complete.');
+  assertUnpricedRail(events.find((event) => event.type === 'provider' && event.provider?.id === 'rail')?.journeys, 'streamed Berlin to Munich');
+  return { url: origin.origin, date: queryDate, buildId: health.buildId, verifiedAssets: checked.length, health: true, streaming: true, routeValidation: true, securityHeaders: true, railJourneys: rail.length, railFares: 'unknown', fastestMinutes: Math.min(...rail.map((journey) => journey.durationMinutes)),
     providers: result.providers.map(({ id, status }) => ({ id, status })), outOfCoverage: outsideStatus, outOfCoverageDate: outsideDate, uncoveredOrigin: uncovered.providers[0].status,
     attribution: rail[0].sources[0].attribution, retrievedAt: rail[0].source.fetchedAt, internalCredentialFieldsExposed: false };
 }
@@ -232,21 +356,36 @@ async function verifyWithTail({ url, tailUrl, date }) {
   } finally { socket.close(); }
 }
 
-async function main() {
-  const mode = process.argv[2];
+export function parseCommand(args) {
+  const [mode = 'help', ...rest] = args;
+  if (['help', '--help', '-h'].includes(mode) && !rest.length) return { mode: 'help', args: [] };
+  const exact = { deploy: 0, manifest: 0, 'upload-assets': 0, 'verify-tail': 0, rollback: 1 };
+  if (Object.hasOwn(exact, mode) && rest.length === exact[mode]) return { mode, args: rest };
+  if (mode === 'verify' && rest.length >= 1 && rest.length <= 2 && !rest.some((arg) => arg.startsWith('--'))) return { mode, args: rest };
+  if (mode === 'connector-package' && (rest.length === 0 || rest.length === 1 && rest[0] === '--bundled-assets')) return { mode, args: rest };
+  if (mode === 'connector-package-chunk' && rest.length >= 2 && rest.length <= 3 && /^\d+$/.test(rest[0]) && /^\d+$/.test(rest[1]) && (!rest[2] || rest[2] === '--bundled-assets')) return { mode, args: rest };
+  throw new Error('Unknown deployment command or arguments. Run node scripts/deploy-cloudflare.mjs help.');
+}
+
+export async function main(argv = process.argv.slice(2)) {
+  const { mode, args } = parseCommand(argv);
+  if (mode === 'help') return { usage: 'deploy | verify URL [YYYY-MM-DD] | rollback RECEIPT | manifest | upload-assets | connector-package [--bundled-assets] | connector-package-chunk OFFSET LENGTH [--bundled-assets] | verify-tail', note: 'No deployment runs without the explicit deploy command. Prefer npm run deploy for required tests and packaging.' };
   if (mode === 'manifest') return { manifest: readPackage().manifest };
   if (mode === 'upload-assets') return { jwt: await uploadAssets(await readInputLine()) };
-  if (mode === 'verify') return verifyDeployment(process.argv[3], process.argv[4]);
+  if (mode === 'verify') return verifyDeployment(args[0], args[1]);
   if (mode === 'verify-tail') return verifyWithTail(await readInputLine());
-  if (mode === 'connector-package') return workerPackage({ bundled: process.argv.includes('--bundled-assets') });
+  if (mode === 'connector-package') return workerPackage({ bundled: args.includes('--bundled-assets') });
   if (mode === 'connector-package-chunk') {
     // Bounded transport for automation tools with a one-megabyte output ceiling.
-    const offset = Number(process.argv[3] || 0), length = Number(process.argv[4] || 400_000);
+    const offset = Number(args[0]), length = Number(args[1]);
     if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(length) || length < 1 || length > 400_000) throw new Error('Invalid package chunk range.');
-    const text = JSON.stringify(workerPackage({ bundled: process.argv.includes('--bundled-assets') }));
+    const text = JSON.stringify(workerPackage({ bundled: args.includes('--bundled-assets') }));
     return { offset, total: text.length, chunk: text.slice(offset, offset + length) };
   }
-  return deploy({ accountId: process.env.CLOUDFLARE_ACCOUNT_ID, token: process.env.CLOUDFLARE_API_TOKEN });
+  const credentials = { accountId: process.env.CLOUDFLARE_ACCOUNT_ID, token: process.env.CLOUDFLARE_API_TOKEN };
+  if (mode === 'rollback') return rollback(JSON.parse(readFileSync(resolve(args[0]), 'utf8')), credentials);
+  if (mode === 'deploy') return deploy(credentials);
+  throw new Error('Unsupported deployment operation.');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

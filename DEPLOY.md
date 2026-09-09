@@ -6,7 +6,7 @@ Current beta: [travel-freely.windcrash64.workers.dev](https://travel-freely.wind
 
 ## Build and verify
 
-Use Node.js 24, npm, and `unzip`. From the repository root:
+Use Node.js 24 and npm. Compact ingestion reads ZIP files directly; it does not require `unzip`. From the repository root:
 
 ```sh
 npm ci
@@ -15,7 +15,7 @@ npm run check
 node scripts/build-cloudflare.mjs
 ```
 
-`data:edge` downloads the compact publisher feed and atomically writes the gitignored `src/data/edge-network.json`. `check` runs tests and builds `dist/`. Packaging writes the compiled Worker, asset manifest, and size summary into `worker/.build/`; it refuses a Worker at or above the free plan's 3 MiB gzip bundle limit. Full deployment still requires a Cloudflare account with suitable access.
+`data:edge` downloads the compact publisher feed and atomically writes the gitignored `src/data/edge-network.json`. `check` runs application, Worker and deployment-pipeline tests, then builds `dist/`. Packaging rebuilds the UI, checks timetable freshness and tomorrow's coverage, and freezes the compiled Worker, public assets, headers, configuration and hashes in `worker/.build/`. It rejects a Worker at or above the free plan's 3 MiB gzip bundle limit. Changes to deployment inputs after packaging require a new package. Full deployment still requires a Cloudflare account with suitable access.
 
 The September 9 snapshot has 656 stations, 5,217 trips, and a September 5–October 5 calendar. These counts describe the snapshot, not guaranteed future feed contents. See [EDGE-DATA.md](docs/EDGE-DATA.md) for resource measurements and search limits.
 
@@ -31,10 +31,12 @@ Provide these environment variables through your shell's secure credential handl
 Then run:
 
 ```sh
-node scripts/deploy-cloudflare.mjs
+npm run deploy
 ```
 
-The helper uploads the static assets, publishes the Worker named in `wrangler.jsonc` (`travel-freely`), enables its `workers.dev` address, and prints the actual URL and deployment result. It preserves existing Worker text secrets. Never put tokens, temporary upload credentials, or provider keys in the repository or browser bundle.
+This runs all checks and creates a fresh package before explicitly deploying it. The helper uploads the frozen static assets, publishes the Worker named in `wrangler.jsonc` (`travel-freely`), enables its `workers.dev` address, and verifies asset hashes, build identity, JSON and streamed searches, and invalid-input responses. It preserves existing Worker text secrets and configured bindings. Never put tokens, temporary upload credentials, or provider keys in the repository or browser bundle. Invoking the helper without a command only displays help; unknown commands fail without publishing.
+
+The helper records previous deployment versions and verification status in `worker/.build/deployment-receipt.json`. If verification fails after publishing, use `npm run rollback:cloudflare -- worker/.build/deployment-receipt.json` with the same account credentials to restore the recorded versions. Rollback is an explicit recovery action; a failed verification is reported as a failed deployment.
 
 Wrangler is also supported for interactive authentication and deployment:
 
@@ -74,13 +76,15 @@ npx wrangler secret put RAIL_API_URL
 
 The Worker calls only that origin's `POST /api/search`. It does not expose the original server's reload route. See [the API contract](docs/CLOUDFLARE.md) before connecting another backend. Bus/metro handoff links are not proof that the backend has their schedules.
 
-## Daily refresh through GitHub Actions
+## Validation and daily refresh through GitHub Actions
+
+The separate [CI workflow](.github/workflows/ci.yml) runs on pull requests and pushes to `master` and `codex/**`. It installs locked dependencies, ingests the compact timetable, runs all checks, packages both deployment strategies, and performs a Wrangler dry run without deployment credentials.
 
 The workflow at [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) has a manual `workflow_dispatch` trigger and a daily **05:30 UTC** schedule. Merge the reviewed changes into the default branch, `master`, and add repository Actions secrets named `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`.
 
 **These GitHub repository secrets are not configured yet.** This workflow is prepared for review; daily production refresh is not active. An interactive deployment through Cloudflare does not automatically configure GitHub Actions.
 
-Run it from `master`. A wrong branch or missing secret produces a failed run with a clear configuration error. A successful run installs locked dependencies, fetches a fresh timetable, runs checks, packages the Worker, deploys it, and checks public health. The workflow has only `contents: read` repository permission and never commits, pushes, or changes the branch. It does not need the flight key in GitHub because the deployed Worker's existing secrets are preserved.
+Run it from `master`. A wrong branch or missing secret produces a failed run with a clear configuration error. A successful run installs locked dependencies, fetches a fresh timetable, runs checks, packages the Worker, deploys it, and checks build identity, static asset hashes, JSON and streamed real rail results, error handling and headers. The workflow has only `contents: read` repository permission and never commits, pushes, or changes the branch. It does not need the flight key in GitHub because the deployed Worker's existing secrets are preserved.
 
 The schedule becomes available after the workflow reaches the default branch; GitHub schedules can be delayed. Check failed or disabled Actions runs. Timetables are bundled at deployment, so a successful ingest without a deployment does not refresh production. Once its calendar expires, the rail API explicitly refuses uncovered dates. [GitHub's schedule behavior](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onschedule)
 

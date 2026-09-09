@@ -9,11 +9,11 @@ From the repository root, use the installed Wrangler v4 CLI:
 ```sh
 npm ci
 node scripts/ingest-edge.mjs
-npm run build
-node --test worker/*.test.js
+npm run check
+npm run build:cloudflare
 npx wrangler deploy --dry-run
-npx wrangler login
-npx wrangler deploy
+# Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN securely, then:
+npm run deploy
 ```
 
 `wrangler.jsonc` points to `worker/index.js`, binds `dist/` as `ASSETS`, and routes `/api/*` to the Worker before the single-page application fallback. The authenticated Cloudflare connector can also deploy the same compiled Worker and assets directly to the selected account. Cloudflare authentication is needed to publish; it is separate from travel-provider credentials.
@@ -46,7 +46,7 @@ Only public HTTPS deep links from provider results reach the client. Multi-ticke
 
 Without `RAIL_API_URL`, `worker/edge-rail.js` searches a compact, real Germany long-distance GTFS feed and international services present in that feed. It returns direct and one-change **station-to-station** options. It does not claim complete European coverage, metro/bus coverage, real-time running status, or rail fares.
 
-The build script downloads the feed and writes `src/data/edge-network.json`. The initial snapshot was retrieved on 2026-09-09 and covers the encoded calendar beginning 2026-09-05 for 31 days. The response includes the actual source, license, attribution, update timestamp, and calendar. Refresh the snapshot and redeploy before its calendar expires; searches outside coverage are refused rather than answered from an unrelated day.
+The ingestion script downloads the feed and writes `src/data/edge-network.json`. The initial snapshot was retrieved on 2026-09-09 and covers the encoded calendar beginning 2026-09-05 for 31 days. The response includes the actual source, license, attribution, update timestamp, and calendar. Refresh the snapshot and redeploy before its calendar expires; searches outside coverage are refused rather than answered from an unrelated day.
 
 ```sh
 node scripts/ingest-edge.mjs
@@ -70,7 +70,7 @@ The external runtime is optional. The Skyscanner account/key and any desired ext
 
 ## HTTP contract
 
-`GET /api/health` reports service health and provider configuration, without secrets or upstream URLs. Configuration is not proof that a provider account is authorized or its latest search will succeed.
+`GET /api/health` reports service health, deployed package `buildId`, and provider configuration, without secrets or upstream URLs. Configuration is not proof that a provider account is authorized or its latest search will succeed.
 
 `POST /api/plan` accepts `application/json`:
 
@@ -87,7 +87,11 @@ The external runtime is optional. The Skyscanner account/key and any desired ext
 
 Change the sample date to a future date covered by the timetable. Dates must be real calendar dates between the current UTC day and 365 days ahead. `adults` is an integer from 1 to 8; supported cabins are `economy`, `premium_economy`, `business`, and `first`. Modes must be unique and non-empty. Names are bounded, coordinates must be finite numbers, and optional IATA codes must have three uppercase letters.
 
-Responses contain `query`, `providers`, `journeys`, and `searchedAt`. Every selected provider has `{id,status,message}`; states include `ok`, `partial`, `empty`, `unavailable`, `not_configured`, and `error`. Provider errors do not discard successful results from other providers. An empty journey list does not imply that travel is impossible.
+Default JSON responses contain `query`, `providers`, `journeys`, and `searchedAt`. Every selected provider has `{id,status,message}` and an optional error `code`; states include `ok`, `partial`, `empty`, `unavailable`, `not_configured`, and `error`. Provider errors do not discard successful results from other providers. An empty journey list does not imply that travel is impossible.
+
+Clients may send `Accept: application/x-ndjson` for independent provider delivery. Validation and rate limiting finish before the stream starts; early failures remain non-200 JSON responses. A successful stream contains one `{type:"start",query}`, a `{type:"provider",provider,journeys}` event for each requested provider as it finishes, and one `{type:"complete",searchedAt}`. Every event ends with a newline. The overall provider budget is 12 seconds; aborting the request or cancelling the response stream stops upstream fetches and polling waits. `enable_request_signal` is set in Worker compatibility flags. Conventional JSON responses remain supported.
+
+The browser reads this stream incrementally with a 20-second overall deadline, bounded response bytes and validation before rendering. Received results survive a later provider failure or cancellation. A new search supersedes older requests; retrying a single provider keeps the others' results. HTTP 429 retry hints disable retries until their countdown expires. The UI's transport tabs filter the common comparison search; they do not imply that every mode has a connected schedule provider.
 
 Each normalized journey includes `id`, `provider`, `mode`, `modes`, `from`, `to`, `date`, `departure`, `arrival`, `durationMinutes`, `changes`, `price`, `bookingUrl`, `bookingLinks`, `legs`, `source`, and `notes`. Each leg has its mode, endpoints, local date/time strings, elapsed duration, and available operator/service information. Rail journeys additionally preserve `sources`. Clients must display `timeBasis`, price basis, provider completeness, and source limitations accurately.
 

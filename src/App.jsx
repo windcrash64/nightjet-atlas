@@ -1,6 +1,10 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import AtlasMap from "./components/AtlasMap.jsx";
 import Icon from "./components/Icon.jsx";
+import SearchProgress from "./components/SearchProgress.jsx";
+import { useJourneySearch } from "./hooks/useJourneySearch.js";
+import { tripKey } from "./lib/search-pipeline.js";
+import { blankCosts, dayOffsetLabel, hasCosts, maximumTravelDate, readSavedTrips, savedTripIdentity, validateTrip } from "./lib/trip-state.js";
 import {
   places,
   searchPlaces,
@@ -13,15 +17,8 @@ import {
 import { ribbonFor, timeAxis } from "./lib/ribbon.js";
 
 const Globe = lazy(() => import("./components/Globe.jsx"));
-const today = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-};
-const tomorrow = () => {
-  const d = new Date();
-  d.setDate(d.getDate() + 1);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-};
+const today = () => new Date().toISOString().slice(0, 10);
+const tomorrow = () => new Date(Date.now() + 86400000).toISOString().slice(0, 10);
 const findCity = (name) => places.find((p) => p.name === name) || places[0];
 const money = (value) =>
   new Intl.NumberFormat("en-IE", {
@@ -46,28 +43,21 @@ const cityNames = [
   "Lisbon",
   "Zurich",
 ];
-const readSaved = () => {
-  try {
-    const a = JSON.parse(localStorage.getItem("travel-freely.saved") || "[]");
-    return Array.isArray(a)
-      ? a.filter((s) => s?.from?.name && s?.to?.name && s?.date).slice(0, 30)
-      : [];
-  } catch {
-    return [];
-  }
-};
+const readSaved = () => { try { return readSavedTrips(localStorage); } catch { return []; } };
 
-function PlaceInput({ label, value, onChange }) {
+function PlaceInput({ label, value, onChange, onDraftChange = () => {} }) {
   const [text, setText] = useState(value.name),
     [open, setOpen] = useState(false),
     [highlight, setHighlight] = useState(0);
   const results = useMemo(() => searchPlaces(text, 6), [text]);
   const ref = useRef(null);
-  useEffect(() => setText(value.name), [value]);
+  useEffect(() => { setText(value.name); setHighlight(0); onDraftChange(label, true); }, [value]);
+  const invalid = text !== value.name;
   const pick = (place) => {
     onChange(place);
     setText(place.name);
     setOpen(false);
+    onDraftChange(label, true);
     ref.current?.focus();
   };
   return (
@@ -84,6 +74,8 @@ function PlaceInput({ label, value, onChange }) {
           aria-expanded={open}
           aria-controls={`list-${label}`}
           aria-autocomplete="list"
+          aria-invalid={invalid && !open ? true : undefined}
+          aria-describedby={invalid && !open ? `help-${label}` : undefined}
           aria-activedescendant={
             open && results[highlight] ? `${label}-${highlight}` : undefined
           }
@@ -96,12 +88,12 @@ function PlaceInput({ label, value, onChange }) {
           }}
           onBlur={() => {
             setOpen(false);
-            setText(value.name);
           }}
           onChange={(e) => {
             setText(e.target.value);
             setOpen(true);
             setHighlight(0);
+            onDraftChange(label, e.target.value === value.name);
           }}
           onKeyDown={(e) => {
             if (e.key === "ArrowDown") {
@@ -120,11 +112,13 @@ function PlaceInput({ label, value, onChange }) {
             if (e.key === "Escape") {
               setOpen(false);
               setText(value.name);
+              onDraftChange(label, true);
             }
           }}
         />
-        <span className="airport-code">{value.iata || value.country}</span>
+        <span className="airport-code">{invalid ? "Choose" : value.iata || value.country}</span>
       </div>
+      {invalid && !open && <small className="place-error" id={`help-${label}`}>Choose a place from the suggestions.</small>}
       {open && (
         <ul id={`list-${label}`} role="listbox" className="place-options">
           {results.length ? (
@@ -238,9 +232,7 @@ function JourneyCard({ journey, active, onSelect, ribbon }) {
       <div className="journey-times">
         <span>
           {journey.departure?.slice(11, 16)} → {journey.arrival?.slice(11, 16)}
-          {journey.arrival?.slice(0, 10) !== journey.departure?.slice(0, 10)
-            ? " (+1 day)"
-            : ""}
+          {dayOffsetLabel(journey.departure, journey.arrival)}
         </span>
         <span>{flight ? "Airport to airport" : "Station to station"}</span>
       </div>
@@ -299,25 +291,32 @@ export default function App() {
   const [saved, setSaved] = useState(readSaved),
     [modal, setModal] = useState(null),
     [toast, setToast] = useState("");
-  const [state, setState] = useState({
-      status: "idle",
-      journeys: [],
-      providers: [],
-    }),
-    [selected, setSelected] = useState(null);
-  const [costs, setCosts] = useState({
-    fare: "",
-    baggage: "",
-    originTransfer: "",
-    destinationTransfer: "",
-  });
+  const { state, start: search, cancel: cancelSearch } = useJourneySearch();
+  const [selected, setSelected] = useState(null);
+  const [costs, setCosts] = useState(blankCosts);
   const [bag, setBag] = useState("backpack");
-  const [showAll, setShowAll] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(3);
   const [mobileMap, setMobileMap] = useState(false);
-  const abort = useRef(null);
-  const inputKey = JSON.stringify({ from, to, date, adults });
-  const [searchedKey, setSearchedKey] = useState("");
-  const stale = searchedKey && searchedKey !== inputKey;
+  const [validation, setValidation] = useState("");
+  const [placeValidity, setPlaceValidity] = useState({ From: true, To: true });
+  const inputKey = tripKey({ from, to, date, adults });
+  const [costsKey, setCostsKey] = useState(inputKey);
+  const costsStale = hasCosts(costs) && costsKey !== inputKey;
+  const stale = state.key && state.key !== inputKey;
+  const [now, setNow] = useState(Date.now);
+  const retryIn = Math.max(0, Math.ceil(((state.retryAt || 0) - now) / 1000));
+  useEffect(() => {
+    if (!state.retryAt) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [state.retryAt]);
+  useEffect(() => {
+    if (state.key && state.key !== inputKey) cancelSearch();
+    setSelected(null);
+    setValidation("");
+  }, [inputKey]);
+  const draftChanged = (label, valid) => setPlaceValidity((current) => current[label] === valid ? current : { ...current, [label]: valid });
   const originAirports = useMemo(() => nearestAirports(from, 3), [from]),
     destinationAirports = useMemo(() => nearestAirports(to, 3), [to]);
   const links = useMemo(
@@ -337,9 +336,10 @@ export default function App() {
     [state.journeys, mode, sort],
   );
   const active = !stale
-    ? state.journeys.find((j) => j.id === selected)
+    ? journeys.find((j) => j.id === selected)
     : undefined;
   const railProvider = state.providers.find((p) => p.id === "rail");
+  const flightProvider = state.providers.find((p) => p.id === "skyscanner");
   const sourceRows = railProvider?.sources || [];
   const ribbons = useMemo(() => {
     const minutes = (iso, day) =>
@@ -372,10 +372,7 @@ export default function App() {
   const knownCosts = Object.values(costs)
     .filter((v) => v !== "" && Number.isFinite(Number(v)) && Number(v) >= 0)
     .reduce((a, v) => a + Number(v), 0);
-  const isSaved = saved.some(
-    (s) =>
-      s.from.name === from.name && s.to.name === to.name && s.date === date,
-  );
+  const isSaved = saved.some((s) => savedTripIdentity(s) === savedTripIdentity({ from, to, date, adults }));
   const notify = (text) => setToast(text);
   useEffect(() => {
     if (toast) {
@@ -384,101 +381,52 @@ export default function App() {
     }
   }, [toast]);
 
-  async function run() {
-    abort.current?.abort();
-    const ctl = new AbortController();
-    abort.current = ctl;
+  function run(options = {}, restored = null) {
+    const trip = restored || { from, to, date, adults };
+    const message = !restored && (!placeValidity.From || !placeValidity.To)
+      ? 'Choose both places from the suggestions before searching.'
+      : validateTrip(trip);
+    if (message) { setValidation(message); return; }
+    setValidation('');
     setSelected(null);
-    setShowAll(false);
-    setSearchedKey(inputKey);
-    if (from.lat === to.lat && from.lon === to.lon) {
-      setState({
-        status: "error",
-        message: "Choose two different places.",
-        journeys: [],
-        providers: [],
-      });
-      return;
-    }
-    if (!date || date < today()) {
-      setState({
-        status: "error",
-        message: "Choose today or a future date.",
-        journeys: [],
-        providers: [],
-      });
-      return;
-    }
-    setState({ status: "loading", journeys: [], providers: [] });
-    try {
-      const res = await fetch("/api/plan", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          from: {
-            name: from.name,
-            lat: from.lat,
-            lon: from.lon,
-            ...(from.iata ? { iata: from.iata } : {}),
-          },
-          to: {
-            name: to.name,
-            lat: to.lat,
-            lon: to.lon,
-            ...(to.iata ? { iata: to.iata } : {}),
-          },
-          date,
-          adults,
-          cabin: "economy",
-          modes: ["plane", "train", "bus", "metro"],
-        }),
-        signal: ctl.signal,
-      });
-      const data = await res.json();
-      if (!res.ok)
-        throw new Error(
-          data.message || "Search is unavailable. Try again shortly.",
-        );
-      if (ctl.signal.aborted) return;
-      setState({
-        ...data,
-        status: "done",
-        journeys: data.journeys || [],
-        providers: data.providers || [],
-      });
-    } catch (e) {
-      if (e.name !== "AbortError")
-        setState({
-          status: "error",
-          message:
-            e.message === "Failed to fetch"
-              ? "The search service could not be reached. You can still check fares with the providers below."
-              : e.message,
-          journeys: [],
-          providers: [],
-        });
-    }
+    setVisibleCount(3);
+    const point = (p) => ({ name: p.name, lat: p.lat, lon: p.lon, ...(p.iata ? { iata: p.iata } : {}) });
+    search({ from: point(trip.from), to: point(trip.to), date: trip.date, adults: trip.adults,
+      cabin: 'economy', modes: ['plane', 'train', 'bus', 'metro'] }, options);
   }
-  useEffect(() => {
-    run();
-    return () => abort.current?.abort();
-  }, []);
+  useEffect(() => { run(); }, []);
   function saveTrip() {
-    if (isSaved) {
-      setTab("saved");
-      return;
-    }
+    const message = validateTrip({ from, to, date, adults });
+    if (message || !placeValidity.From || !placeValidity.To) { setValidation(message || 'Choose both places from the suggestions before saving.'); return; }
+    const identity = savedTripIdentity({ from, to, date, adults });
+    const existing = saved.find((s) => savedTripIdentity(s) === identity);
     const next = [
-      { id: Date.now(), from, to, date, adults, budget, bag, costs },
-      ...saved,
+      { id: existing?.id || crypto.randomUUID(), from, to, date, adults, budget, bag, costs, costsKey, mode },
+      ...saved.filter((s) => savedTripIdentity(s) !== identity),
     ].slice(0, 30);
     try {
-      localStorage.setItem("travel-freely.saved", JSON.stringify(next));
+      localStorage.setItem('travel-freely.saved', JSON.stringify(next));
       setSaved(next);
-      notify("Trip saved on this device.");
-    } catch {
-      notify("Your browser could not save this trip.");
-    }
+      notify(existing ? 'Saved trip updated on this device.' : 'Trip saved on this device.');
+    } catch { notify('Your browser could not save this trip.'); }
+  }
+  function openSaved(trip) {
+    cancelSearch({ silent: true });
+    const expired = trip.date < today();
+    const nextDate = expired ? tomorrow() : trip.date;
+    setFrom(trip.from);
+    setTo(trip.to);
+    setDate(nextDate);
+    setAdults(trip.adults);
+    setBudget(trip.budget);
+    setBag(trip.bag);
+    setMode(trip.mode || 'all');
+    setCosts(trip.costs || blankCosts());
+    setCostsKey(trip.costsKey || tripKey(trip));
+    setTab('explore');
+    setPlaceValidity({ From: true, To: true });
+    if (expired) notify('The saved date has passed. Searching tomorrow; review your budget estimates.');
+    run({}, { ...trip, date: nextDate });
   }
   function removeSaved(id) {
     const next = saved.filter((s) => s.id !== id);
@@ -494,6 +442,7 @@ export default function App() {
     ["plane", "plane", "Flights"],
     ["train", "train", "Trains"],
     ["bus", "bus", "Buses"],
+    ["metro", "train", "Metro"],
   ];
   const dateLabel = date
     ? new Date(`${date}T12:00:00`).toLocaleDateString("en-GB", {
@@ -584,36 +533,13 @@ export default function App() {
                         {s.from.name} → {s.to.name}
                       </strong>
                       <p>
-                        {s.date} · {money(s.budget)} budget
+                        {s.date} · {s.adults} {s.adults === 1 ? "traveler" : "travelers"} · {money(s.budget)} budget
                       </p>
                     </div>
                     <button
                       className="icon-button"
                       aria-label={`Open saved trip to ${s.to.name}`}
-                      onClick={() => {
-                        abort.current?.abort();
-                        setFrom(s.from);
-                        setTo(s.to);
-                        setDate(s.date < today() ? tomorrow() : s.date);
-                        setAdults(s.adults || 1);
-                        setBudget(s.budget);
-                        setBag(s.bag || "backpack");
-                        setCosts(
-                          s.costs || {
-                            fare: "",
-                            baggage: "",
-                            originTransfer: "",
-                            destinationTransfer: "",
-                          },
-                        );
-                        setTab("explore");
-                        setState({
-                          status: "idle",
-                          journeys: [],
-                          providers: [],
-                        });
-                        setSearchedKey("");
-                      }}
+                      onClick={() => openSaved(s)}
                     >
                       <Icon name="arrow" />
                     </button>
@@ -645,7 +571,7 @@ export default function App() {
                 }}
               >
                 <div className="places-box">
-                  <PlaceInput label="From" value={from} onChange={setFrom} />
+                  <PlaceInput label="From" value={from} onChange={setFrom} onDraftChange={draftChanged} />
                   <button
                     className="swap-button"
                     type="button"
@@ -657,7 +583,7 @@ export default function App() {
                   >
                     <Icon name="swap" size={17} />
                   </button>
-                  <PlaceInput label="To" value={to} onChange={setTo} />
+                  <PlaceInput label="To" value={to} onChange={setTo} onDraftChange={draftChanged} />
                 </div>
                 <div className="date-passengers">
                   <label>
@@ -671,6 +597,7 @@ export default function App() {
                         type="date"
                         value={date}
                         min={today()}
+                        max={maximumTravelDate()}
                         required
                         onChange={(e) => setDate(e.target.value)}
                       />
@@ -694,19 +621,21 @@ export default function App() {
                 <button
                   className="primary-button search-button"
                   type="submit"
-                  disabled={state.status === "loading"}
+                  disabled={state.status === "loading" && !stale || retryIn > 0 && !stale}
                 >
-                  {state.status === "loading" ? (
+                  {state.status === "loading" && !stale ? (
                     <>
                       <span className="spinner" />
                       Finding your way…
                     </>
                   ) : (
                     <>
-                      Find my way <Icon name="arrow" size={20} />
+                      {retryIn > 0 && !stale ? `Try again in ${retryIn}s` : "Find my way"} <Icon name="arrow" size={20} />
                     </>
                   )}
                 </button>
+                {state.status === "loading" && !stale && <button className="cancel-search" type="button" onClick={() => cancelSearch()}>Stop search · keep received options</button>}
+                {validation && <p className="search-notice error" role="alert">{validation}</p>}
               </form>
               <div className="preferences">
                 <button onClick={() => setModal("budget")}>
@@ -753,7 +682,7 @@ export default function App() {
                   </div>
                   <button
                     className={`icon-button save-button ${isSaved ? "saved" : ""}`}
-                    aria-label={isSaved ? "View saved trip" : "Save this trip"}
+                    aria-label={isSaved ? "Update saved trip" : "Save this trip"}
                     onClick={saveTrip}
                   >
                     <Icon name="heart" />
@@ -774,8 +703,9 @@ export default function App() {
                       <span>
                         <strong>Explore flight prices</strong>
                         <small>
-                          Check this trip on Skyscanner · live fares aren’t
-                          connected here yet
+                          {flightProvider?.status === "not_configured"
+                            ? "Compare on Skyscanner · live fares aren’t connected here yet"
+                            : "Compare this trip directly on Skyscanner"}
                         </small>
                       </span>
                       <Icon name="external" size={17} />
@@ -788,15 +718,14 @@ export default function App() {
                   </div>
                 )}
                 <div aria-live="polite">
-                  {state.status === "error" && (
-                    <p className="search-notice error">{state.message}</p>
-                  )}
-                  {state.status === "loading" && (
-                    <p className="search-notice">
-                      Checking available timetables and fare connections…
-                    </p>
+                  {!stale && (state.status === "error" || state.status === "cancelled") && (
+                    <div className={`search-notice ${state.status === "error" ? "error" : ""}`}>
+                      <span>{state.message}</span>
+                      <button className="text-link" disabled={retryIn > 0} onClick={() => run()}>{retryIn ? `Retry in ${retryIn}s` : "Search again"}</button>
+                    </div>
                   )}
                 </div>
+                {!stale && <SearchProgress providers={state.providers} mode={mode} loading={state.status === "loading"} onRetry={(id) => run({ retryProvider: id })} retryIn={retryIn} />}
                 {!stale && journeys.length > 0 && (
                   <>
                     <div className="sort-row">
@@ -820,7 +749,7 @@ export default function App() {
                         bags may cost extra.
                       </p>
                     )}
-                    {journeys.slice(0, showAll ? 8 : 3).map((j) => (
+                    {journeys.slice(0, visibleCount).map((j) => (
                       <JourneyCard
                         key={j.id}
                         journey={j}
@@ -835,11 +764,11 @@ export default function App() {
                     {journeys.length > 3 && (
                       <button
                         className="show-more"
-                        onClick={() => setShowAll(!showAll)}
+                        onClick={() => setVisibleCount(visibleCount >= journeys.length ? 3 : Math.min(journeys.length, visibleCount + 8))}
                       >
-                        {showAll
+                        {visibleCount >= journeys.length
                           ? "Show fewer options"
-                          : `Show all ${Math.min(8, journeys.length)} options`}{" "}
+                          : `Show ${Math.min(8, journeys.length - visibleCount)} more options`}{" "}
                         <Icon name="chevron" size={14} />
                       </button>
                     )}
@@ -856,10 +785,12 @@ export default function App() {
                   <p className="micro-note empty-result">
                     {mode === "all"
                       ? "No timetable or live-fare options were returned."
-                      : `No ${mode === "plane" ? "flight" : mode === "train" ? "train" : "bus"} results for this search.`}{" "}
+                      : `No ${{ plane: "flight", train: "train", bus: "bus", metro: "metro" }[mode]} results for this search.`}{" "}
                     Explore the providers below.
                   </p>
                 )}
+                {!stale && state.searchedAt && <p className="search-time">Search completed at {new Date(state.searchedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}. Timetable retrieval dates appear below.</p>}
+                {(mode === "bus" || mode === "metro") && <p className="search-notice">{mode === "bus" ? "Coach" : "Local transit"} options open in the provider’s planner. Check the date, connections and ticket price there.</p>}
                 <div className="provider-heading">
                   <span>CHECK WITH THE SOURCE</span>
                   <span>NO MARKUP</span>
@@ -868,11 +799,8 @@ export default function App() {
                   .filter((l) => mode === "all" || l.mode === mode)
                   .filter(
                     (l) =>
-                      l.mode !== "plane" ||
+                      l.id !== "skyscanner" ||
                       state.journeys.some((j) => j.mode === "plane"),
-                  )
-                  .filter(
-                    (l, i, a) => a.findIndex((x) => x.mode === l.mode) === i,
                   )
                   .map((link) => (
                     <a
@@ -900,7 +828,7 @@ export default function App() {
                             ? "Start with flights"
                             : link.mode === "train"
                               ? "Take the scenic route"
-                              : "Compare coach connections"}
+                              : link.mode === "metro" ? "Find local bus & metro" : "Compare coach connections"}
                         </strong>
                         <span>
                           {link.name} ·{" "}
@@ -1106,9 +1034,9 @@ export default function App() {
               <input
                 type="number"
                 min="0"
-                max="100000"
+                max="1000000"
                 value={budget}
-                onChange={(e) => setBudget(Math.max(0, Number(e.target.value)))}
+                onChange={(e) => setBudget(Math.min(1000000, Math.max(0, Number(e.target.value) || 0)))}
               />
             </label>
             <label className="bag-select">
@@ -1140,18 +1068,27 @@ export default function App() {
                       aria-label={`${label} cost in EUR`}
                       type="number"
                       min="0"
+                      max="1000000"
                       step=".01"
                       placeholder="Unknown"
                       value={costs[key]}
-                      onChange={(e) =>
-                        setCosts((c) => ({ ...c, [key]: e.target.value }))
-                      }
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        if (value !== "" && (!Number.isFinite(Number(value)) || Number(value) < 0 || Number(value) > 1000000)) return;
+                        if (!hasCosts(costs)) setCostsKey(inputKey);
+                        setCosts((c) => ({ ...c, [key]: value }));
+                      }}
                     />
                   </span>
                 </label>
               ))}
             </div>
-            <div className="budget-result">
+            {costsStale && <div className="budget-review" role="status">
+              <strong>Review estimates for this trip</strong>
+              <p>These figures came from a different route, date or traveler count. Check each amount before using the total.</p>
+              <button className="text-link" onClick={() => setCostsKey(inputKey)}>Use these estimates for this trip <Icon name="check" size={15} /></button>
+            </div>}
+            {!costsStale && <div className="budget-result">
               <span>
                 {total == null ? "Known costs so far" : "Your entered total"}
               </span>
@@ -1170,7 +1107,8 @@ export default function App() {
                     ? `${money(budget - total)} left in your budget.`
                     : `${money(total - budget)} over your budget.`}
               </p>
-            </div>
+            </div>}
+            {hasCosts(costs) && <button className="text-link reset-costs" onClick={() => { setCosts(blankCosts()); setCostsKey(inputKey); }}>Clear estimates</button>}
             <p className="micro-note">
               These are your planning figures, not a live quote. Saved trips
               retain the figures from when you saved them.
@@ -1338,7 +1276,7 @@ export default function App() {
                     <strong>
                       {leg.service ||
                         leg.operator ||
-                        (leg.mode === "walk" ? "Walk / transfer" : "Train")}
+                        ({ walk: "Walk / transfer", plane: "Flight", train: "Train", bus: "Bus", metro: "Metro" }[leg.mode] || "Transit")}
                     </strong>
                     <p>
                       {leg.from?.name} → {leg.to?.name}
@@ -1414,7 +1352,7 @@ export default function App() {
                 {(
                   s.retrievedAt ||
                   s.updatedAt ||
-                  active.source.generatedAt
+                  active.source?.generatedAt
                 )?.slice(0, 10)}
               </p>
             ))}

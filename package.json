@@ -11,11 +11,15 @@
     "preview": "vite preview",
     "test": "node --test src/**/*.test.js",
     "data:airports": "node scripts/build-airports.mjs",
-    "check": "npm test && npm run test:worker && npm run build",
+    "check": "npm test && npm run test:worker && npm run test:pipeline && npm run build",
     "dev:api": "wrangler dev --port 8787",
-    "deploy": "npm run build && wrangler deploy",
+    "deploy": "npm run check && npm run build:cloudflare && node scripts/deploy-cloudflare.mjs deploy",
+    "build:cloudflare": "node scripts/build-cloudflare.mjs",
+    "verify:cloudflare": "node scripts/deploy-cloudflare.mjs verify",
+    "rollback:cloudflare": "node scripts/deploy-cloudflare.mjs rollback",
     "data:edge": "node scripts/ingest-edge.mjs",
-    "test:worker": "node --test worker/*.test.js"
+    "test:worker": "node --test worker/*.test.js",
+    "test:pipeline": "node --test scripts/*.test.mjs"
   },
   "dependencies": {
     "@fontsource-variable/dm-sans": "^5.3.0",

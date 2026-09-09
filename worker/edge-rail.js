@@ -1,4 +1,4 @@
-import network from '../src/data/edge-network.json' with { type: 'json' };
+import bundledNetwork from '../src/data/edge-network.json' with { type: 'json' };
 import { accessStops, dayNumberFor, runsOnDay } from '../src/lib/router.js';
 import { Calls } from '../src/lib/calls.js';
 
@@ -7,7 +7,7 @@ import { Calls } from '../src/lib/calls.js';
 // spend its request CPU allowance preparing the same immutable timetable.
 const timetable = initializeTimetable();
 
-function initializeTimetable() {
+function initializeTimetable(network = bundledNetwork) {
   // Lookup tables are computed during ingest. Startup only hydrates typed
   // columns; no network request, filesystem access or traveller state is used.
   const edge = network.edge;
@@ -26,6 +26,7 @@ function initializeTimetable() {
 
 function dateNumber(value) {
   const iso = value == null ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()) : String(value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso) && !(typeof value === 'number' && /^\d{8}$/.test(iso))) return null;
   const compact = iso.replaceAll('-', '');
   if (!/^\d{8}$/.test(compact)) return null;
   const time = Date.UTC(+compact.slice(0, 4), +compact.slice(4, 6) - 1, +compact.slice(6, 8));
@@ -34,12 +35,12 @@ function dateNumber(value) {
 }
 
 function stopAt(index, si, ci) {
-  const stop = network.stops[index.calls.stopAt(si, ci)];
+  const stop = index.network.stops[index.calls.stopAt(si, ci)];
   return { name: stop.n, lat: stop.y, lon: stop.x };
 }
 
 function leg(index, si, board, alight) {
-  const service = network.services[si];
+  const service = index.network.services[si];
   return {
     mode: service.m, service: service.s, serviceId: service.i,
     operator: service.o, headsign: service.h,
@@ -60,7 +61,7 @@ function journey(legs) {
   };
 }
 
-function materializeJourney({ si, board, alight, nextSi, nextBoard, nextAlight, walkMin }) {
+function materializeJourney(timetable, { si, board, alight, nextSi, nextBoard, nextAlight, walkMin }) {
   const { index } = timetable;
   const firstLeg = leg(index, si, board, alight);
   const legs = [firstLeg];
@@ -103,7 +104,16 @@ export function pruneDominatedJourneys(found) {
  * packed index and station selection are reused. Train identity is the trip ID,
  * never the generic route label (separate ICE services must stay separate).
  */
-export function edgeRailSearch(input = {}) {
+export function createEdgeRailSearch(network) {
+  const state = initializeTimetable(network);
+  return (input) => searchTimetable(input, state);
+}
+
+export function edgeRailSearch(input) { return searchTimetable(input, timetable); }
+
+function searchTimetable(input = {}, timetable) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) input = {};
+  const network = timetable.index.network;
   const { from, to } = input;
   const date = dateNumber(input.date);
   const base = {
@@ -155,7 +165,9 @@ export function edgeRailSearch(input = {}) {
     const departMin = index.calls.departAt(si, board);
     const arriveMin = index.calls.arriveAt(nextSi < 0 ? si : nextSi, nextSi < 0 ? alight : nextAlight);
     const durationMin = arriveMin - departMin;
-    const key = network.services[si].i + (nextSi < 0 ? '' : `|${network.services[nextSi].i}`);
+    // Numeric positions are unambiguous even when publisher trip IDs contain
+    // punctuation used by a textual separator.
+    const key = `${si}:${nextSi}`;
     const previous = results.get(key);
     // Multiple interchange stops and city stations can produce the same train
     // combination. Reject equal/slower copies before allocating legs and lists.
@@ -176,10 +188,10 @@ export function edgeRailSearch(input = {}) {
       if (!active[si] || visitedBoardings.has(`${si}:${ci}`)) continue;
       visitedBoardings.add(`${si}:${ci}`);
       const direct = firstDestination(si, ci);
-      if (direct !== undefined) { add(si, ci, direct); continue; }
+      if (direct !== undefined) add(si, ci, direct);
       // Look for one change at each permissible arrival. The GTFS service-day
       // minute values, including >24:00, are retained without fabricated times.
-      for (let transferCall = ci + 1; transferCall < index.calls.count(si); transferCall++) {
+      for (let transferCall = ci + 1; transferCall < (direct ?? index.calls.count(si)); transferCall++) {
         if (!(network.services[si].p[transferCall] & 2)) continue;
         const at = index.calls.stopAt(si, transferCall);
         const arrival = index.calls.arriveAt(si, transferCall);
@@ -217,5 +229,5 @@ export function edgeRailSearch(input = {}) {
     if (selected.some((p) => Math.abs(p.departMin - j.departMin) < 25 && p.durationMin <= j.durationMin && p.transfers <= j.transfers)) continue;
     take(j);
   }
-  return { ...base, journeys: selected.sort((a, b) => a.departMin - b.departMin).map(materializeJourney), ...(!selected.length ? { coverage: 'No direct or one-change train found for this route and date in this feed. Other operators or routes may exist.' } : {}) };
+  return { ...base, journeys: selected.sort((a, b) => a.departMin - b.departMin).map((candidate) => materializeJourney(timetable, candidate)), ...(!selected.length ? { coverage: 'No direct or one-change train found for this route and date in this feed. Other operators or routes may exist.' } : {}) };
 }

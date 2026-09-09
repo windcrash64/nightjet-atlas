@@ -4,6 +4,7 @@ import { Line, OrbitControls } from '@react-three/drei';
 import { feature } from 'topojson-client';
 import countries110m from 'world-atlas/countries-110m.json';
 import * as THREE from 'three';
+import { journeyMapLegs, journeyMapStops } from '../lib/search-pipeline.js';
 
 /**
  * The world, with the journey drawn on it.
@@ -86,7 +87,8 @@ function useCountryLines() {
 }
 
 function Journey({ journey, active, reduced }) {
-  const rides = journey.legs.filter((l) => l.mode !== 'walk' && l.from.lat != null && l.to.lat != null);
+  const rides = journeyMapLegs(journey);
+  const stops = journeyMapStops(journey);
   return (
     <group>
       {rides.map((leg, i) => {
@@ -107,16 +109,9 @@ function Journey({ journey, active, reduced }) {
           </group>
         );
       })}
-      {active && rides.map((leg, i) => (
-        <Stop key={`s${i}`} lat={leg.from.lat} lon={leg.from.lon} first={i === 0} />
+      {active && stops.map((place, i) => (
+        <Stop key={`s${i}`} lat={place.lat} lon={place.lon} first={i === 0 || i === stops.length - 1} />
       ))}
-      {active && rides.length > 0 && (
-        <Stop
-          lat={rides[rides.length - 1].to.lat}
-          lon={rides[rides.length - 1].to.lon}
-          first
-        />
-      )}
     </group>
   );
 }
@@ -152,10 +147,9 @@ function Scene({ journeys, activeIndex, reduced }) {
   // a two-pixel scratch over the Sahara; the map has to answer "where is this".
   const target = useMemo(() => {
     const j = journeys[activeIndex] ?? journeys[0];
-    const rides = j?.legs.filter((l) => l.from.lat != null && l.to.lat != null) ?? [];
-    if (!rides.length) return { lat: 50, lon: 10, distance: 7 };
-    const last = rides[rides.length - 1];
-    const a = rides[0].from, b = last.to;
+    const stops = journeyMapStops(j);
+    if (!stops.length) return { lat: 50, lon: 10, distance: 7 };
+    const a = stops[0], b = stops.at(-1);
 
     // Frame the journey: sit far enough back that both ends are comfortably
     // inside the view, and never so close that the globe fills the frame.
@@ -255,6 +249,8 @@ function hasWebGL() {
 
 export default function Globe({ journeys = [], activeIndex = 0, reduced = false }) {
   const [ok, setOk] = useState(() => (typeof window === 'undefined' ? true : hasWebGL()));
+  const safeJourneys = useMemo(() => (Array.isArray(journeys) ? journeys.filter((journey) => journey && Array.isArray(journey.legs)) : []), [journeys]);
+  const selected = Number.isInteger(activeIndex) && activeIndex >= 0 && activeIndex < safeJourneys.length ? activeIndex : 0;
 
   if (!ok) {
     return (
@@ -276,7 +272,7 @@ export default function Globe({ journeys = [], activeIndex = 0, reduced = false 
           }, { once: true });
         }}
       >
-        <Scene journeys={journeys} activeIndex={activeIndex} reduced={reduced} />
+        <Scene journeys={safeJourneys} activeIndex={selected} reduced={reduced} />
       </Canvas>
     </div>
   );

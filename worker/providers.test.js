@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fetchProviderJson, normalizeFlights, normalizeRail, searchFlights, searchRail } from './providers.js';
-import { readJsonLimited, safeUrl, validatePlan } from './validation.js';
+import { ApiError, readJsonLimited, safeUrl, validatePlan } from './validation.js';
 
 const input = { from: { name: 'Istanbul', lat: 41.01, lon: 28.97, iata: 'IST' }, to: { name: 'Berlin', lat: 52.52, lon: 13.4, iata: 'BER' }, date: '2026-10-15', adults: 2, cabin: 'economy', modes: ['plane', 'train', 'bus', 'metro'] };
 const now = new Date('2026-09-09T12:00:00Z');
@@ -57,7 +57,7 @@ test('cities sharing an airport remain valid for ground travel and never trigger
 });
 
 test('booking URLs reject dangerous schemes, embedded credentials and local targets', () => {
-  for (const url of ['javascript:alert(1)', 'data:text/html,hi', '//book.example/path', 'http://book.example', 'https://user:pass@book.example', 'https://localhost/', 'https://127.0.0.1', 'https://169.254.169.254/', 'https://[::1]/', 'https://router.local']) assert.equal(safeUrl(url), null);
+  for (const url of ['javascript:alert(1)', 'data:text/html,hi', '//book.example/path', 'http://book.example', 'https://user:pass@book.example', 'https://localhost/', 'https://localhost./', 'https://127.0.0.1', 'https://169.254.169.254/', 'https://[::1]/', 'https://router.local', 'https://router.local.']) assert.equal(safeUrl(url), null);
   assert.equal(safeUrl('https://booking.example/flight?route=IST-BER'), 'https://booking.example/flight?route=IST-BER');
 });
 
@@ -92,7 +92,7 @@ test('multi-ticket options never advertise the first booking item as the whole f
   assert.equal(journey.bookingUrl, null);
   assert.equal(journey.bookingLinks.length, 2);
   data.itineraries.flight1.pricingOptions[0].items[0].deepLink = 'javascript:alert(1)';
-  assert.deepEqual(normalizeFlights(data, input)[0].bookingLinks, []);
+  assert.deepEqual(normalizeFlights(data, input), []);
 });
 
 test('create/poll replaces obsolete quotes and respects not-modified response', async () => {
@@ -139,7 +139,7 @@ test('unconfigured providers never make requests and failures do not reveal secr
 
 test('upstream response body is bounded and requests have abort deadlines', async () => {
   await assert.rejects(fetchProviderJson('https://provider.example', {}, async () => new Response('x', { headers: { 'content-length': '5000000' } })), (error) => error.status === 413);
-  await assert.rejects(fetchProviderJson('https://provider.example', {}, async (_url, { signal }) => new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('aborted')))), 5), /aborted/);
+  await assert.rejects(fetchProviderJson('https://provider.example', {}, async (_url, { signal }) => new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('aborted')))), 5), (error) => error.code === 'provider_timeout');
 });
 
 test('rail preserves overnight dates, source attribution and null fares', () => {
@@ -158,8 +158,8 @@ test('rail preserves overnight dates, source attribution and null fares', () => 
 
 test('stale/mismatched calendars and disallowed modes never become timetable answers', () => {
   assert.equal(normalizeRail({ ...railData(), calendar: { from: 20250101, days: 30 } }, input).provider.status, 'unavailable');
-  assert.equal(normalizeRail({ ...railData(), date: 20261014 }, input).provider.status, 'unavailable');
-  assert.equal(normalizeRail({ ...railData(), calendar: null }, input).provider.status, 'unavailable');
+  assert.equal(normalizeRail({ ...railData(), date: 20261014 }, input).provider.code, 'invalid_provider_response');
+  assert.equal(normalizeRail({ ...railData(), calendar: null }, input).provider.code, 'invalid_provider_response');
   assert.deepEqual(normalizeRail(railData(), { ...input, modes: ['bus'] }).journeys, []);
 });
 
@@ -171,4 +171,130 @@ test('rail proxy sends exact date to only /api/search and optional edge fallback
   assert.equal(sent.body.date, 20261015);
   assert.equal(sent.body.departHour, 0);
   assert.equal((await searchRail(input, {}, { edgeRailSearch: async () => railData() })).provider.status, 'ok');
+});
+
+test('a broken cheapest booking option cannot hide a valid complete fare', () => {
+  const data = flightData('80', 'PRICE_UNIT_WHOLE');
+  data.itineraries.flight1.pricingOptions[0].items = [];
+  data.itineraries.flight1.pricingOptions.push({ price: { amount: '95', unit: 'PRICE_UNIT_WHOLE' }, items: [{ agentId: 'airline1', deepLink: 'https://airline.example/complete' }] });
+  const [journey] = normalizeFlights(data, input);
+  assert.equal(journey.price.amount, 95);
+  assert.equal(journey.bookingUrl, 'https://airline.example/complete');
+});
+
+test('intermediate flight airports never inherit origin or destination coordinates', () => {
+  const data = flightData();
+  data.places.vie = { name: 'Vienna', iata: 'VIE' };
+  data.legs.leg1.segmentIds = ['s1', 's2'];
+  data.legs.leg1.stopCount = 1;
+  data.segments.s1 = { ...data.segments.s1, destinationPlaceId: 'vie', arrivalDateTime: dt(13), durationInMinutes: 60 };
+  data.segments.s2 = { ...data.segments.s1, originPlaceId: 'vie', destinationPlaceId: 'ber', departureDateTime: dt(13, 30), arrivalDateTime: dt(14), durationInMinutes: 60 };
+  const [journey] = normalizeFlights(data, input);
+  assert.equal(journey.legs[0].from.lat, input.from.lat);
+  assert.equal(journey.legs[0].to.iata, 'VIE');
+  assert.equal(journey.legs[0].to.lat, null);
+  assert.equal(journey.legs[0].to.lon, null);
+  assert.equal(journey.legs[1].from.lat, null);
+  assert.equal(journey.legs[1].to.lat, input.to.lat);
+});
+
+test('incomplete or internally inconsistent flight segments are omitted', () => {
+  const missing = flightData();
+  delete missing.segments.s1;
+  assert.deepEqual(normalizeFlights(missing, input), []);
+  const wrongEndpoint = flightData();
+  wrongEndpoint.segments.s1.originPlaceId = 'other';
+  assert.deepEqual(normalizeFlights(wrongEndpoint, input), []);
+  const wrongTime = flightData();
+  wrongTime.segments.s1.arrivalDateTime = dt(15);
+  assert.deepEqual(normalizeFlights(wrongTime, input), []);
+  const wrongDuration = flightData();
+  wrongDuration.segments.s1.durationInMinutes = 181;
+  assert.deepEqual(normalizeFlights(wrongDuration, input), []);
+});
+
+test('malformed flight responses and provider rate limits have stable codes without leaking details', async () => {
+  for (const invalid of [null, [], {}, { status: 'RESULT_STATUS_COMPLETE' }, { status: 'UNKNOWN', content: { results: {} } }]) {
+    const response = await searchFlights(input, { SKYSCANNER_API_KEY: 'private-key' }, { fetcher: async () => Response.json(invalid) });
+    assert.equal(response.provider.status, 'error');
+    assert.equal(response.provider.code, 'invalid_provider_response');
+    assert.deepEqual(response.journeys, []);
+  }
+  const response = await searchFlights(input, { SKYSCANNER_API_KEY: 'private-key' }, { fetcher: async () => new Response('Private upstream error', { status: 429 }) });
+  assert.equal(response.provider.code, 'provider_rate_limited');
+  assert.equal(JSON.stringify(response).includes('Private upstream'), false);
+});
+
+test('deadline during polling keeps verified quotes and stops further network work', async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const response = await searchFlights(input, { SKYSCANNER_API_KEY: 'secret' }, {
+    signal: controller.signal,
+    fetcher: async () => { calls++; return Response.json({ sessionToken: 'session', status: 'RESULT_STATUS_INCOMPLETE', content: { results: flightData() } }); },
+    sleep: async () => { controller.abort(new ApiError(504, 'provider_timeout', 'Search deadline')); },
+  });
+  assert.equal(calls, 1);
+  assert.equal(response.provider.status, 'partial');
+  assert.equal(response.provider.code, 'provider_timeout');
+  assert.equal(response.journeys[0].price.amount, 129.5);
+});
+
+test('pre-cancelled and mid-flight requests abort even an adapter that ignores the signal', async () => {
+  const pre = new AbortController();
+  pre.abort();
+  let calls = 0;
+  await assert.rejects(fetchProviderJson('https://provider.example', { signal: pre.signal }, async () => { calls++; return Response.json({}); }), (error) => error.code === 'request_cancelled');
+  assert.equal(calls, 0);
+  const active = new AbortController();
+  let providerSignal;
+  const request = fetchProviderJson('https://provider.example', { signal: active.signal }, async (_url, init) => {
+    providerSignal = init.signal;
+    queueMicrotask(() => active.abort());
+    return new Promise(() => {});
+  });
+  await assert.rejects(request, (error) => error.code === 'request_cancelled');
+  assert.equal(providerSignal.aborted, true);
+});
+
+test('streamed bodies stop on caller cancellation and oversized bodies never await a stuck cancel hook', async () => {
+  const controller = new AbortController();
+  let bodyCancelled = false;
+  const pending = readJsonLimited(new Response(new ReadableStream({ cancel() { bodyCancelled = true; } })), 8192, 5000, controller.signal);
+  controller.abort();
+  await assert.rejects(pending, (error) => error.code === 'request_cancelled');
+  assert.equal(bodyCancelled, true);
+  const oversized = new Response(new ReadableStream({
+    start(stream) { stream.enqueue(new Uint8Array(10)); },
+    cancel() { return new Promise(() => {}); },
+  }));
+  await assert.rejects(readJsonLimited(oversized, 5), (error) => error.code === 'body_too_large');
+});
+
+test('rail rejects malformed dates, departures on a different day and inconsistent leg boundaries', () => {
+  for (const date of ['invalid', null, 20260230, 20261014]) {
+    assert.equal(normalizeRail({ ...railData(), date }, input).provider.code, 'invalid_provider_response');
+  }
+  for (const mutate of [
+    (journey) => { journey.legs[0].departMin++; },
+    (journey) => { journey.legs[0].arriveMin--; },
+    (journey) => { journey.departMin += 1440; journey.arriveMin += 1440; journey.legs[0].departMin += 1440; journey.legs[0].arriveMin += 1440; },
+  ]) {
+    const data = railData(); mutate(data.journeys[0]);
+    const response = normalizeRail(data, input);
+    assert.equal(response.provider.code, 'invalid_provider_response');
+    assert.deepEqual(response.journeys, []);
+  }
+});
+
+test('overlapping rail connections are omitted while valid journeys remain clearly partial', () => {
+  const data = railData();
+  const invalid = structuredClone(data.journeys[0]);
+  invalid.legs[0].arriveMin = 1450;
+  invalid.legs.push({ ...invalid.legs[0], departMin: 1440, arriveMin: 1500 });
+  data.journeys.push(invalid);
+  const response = normalizeRail(data, input);
+  assert.equal(response.journeys.length, 1);
+  assert.equal(response.provider.status, 'partial');
+  assert.equal(response.provider.code, 'invalid_provider_response');
+  assert.equal(response.journeys[0].price, null);
 });

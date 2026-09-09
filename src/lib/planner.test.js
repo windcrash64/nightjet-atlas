@@ -84,7 +84,41 @@ test('flight handoffs preserve the selected adult count without silently substit
   for (const adults of [0, 9, 2.5, null, '', true, [2], Infinity, 'invalid']) {
     assert.equal(providerLinks('IST', 'VIE', '2026-12-09', { adults })[0].prefilled, false);
   }
-  assert.ok(providerLinks('IST', 'VIE', '2026-12-09').every(link => ['plane', 'train', 'bus'].includes(link.mode)));
+  assert.ok(providerLinks('IST', 'VIE', '2026-12-09').every(link => ['plane', 'train', 'bus', 'metro'].includes(link.mode)));
+});
+
+test('Google Maps transit handoff uses the selected coordinates without promising date, metro-only routes or fares', () => {
+  const from = { name: 'Origin', lat: 0, lon: -73.99 };
+  const to = { name: 'Destination', lat: 40.75, lon: 0 };
+  const link = providerLinks(from, to, '2026-12-09', { adults: 2 }).find(link => link.id === 'google-transit');
+  const url = new URL(link.url);
+  assert.equal(url.origin, 'https://www.google.com');
+  assert.equal(url.pathname, '/maps/dir/');
+  assert.equal(url.searchParams.get('api'), '1');
+  assert.equal(url.searchParams.get('travelmode'), 'transit');
+  assert.equal(url.searchParams.get('origin'), '0,-73.99');
+  assert.equal(url.searchParams.get('destination'), '40.75,0');
+  assert.deepEqual([...url.searchParams.keys()].sort(), ['api', 'destination', 'origin', 'travelmode']);
+  assert.equal(link.mode, 'metro');
+  assert.equal(link.prefilled, false);
+  assert.match(link.note, /Choose the date and time in Google Maps/);
+  assert.match(link.note, /may include buses, trains or metro/);
+  assert.match(link.note, /check availability and fares/);
+  assert.ok(!link.url.includes('2026-12-09'));
+  const city = places.find(place => place.name === 'Vienna');
+  const cityUrl = new URL(providerLinks('Wien', 'Berlin', '2026-12-09').find(link => link.id === 'google-transit').url);
+  assert.equal(cityUrl.searchParams.get('origin'), `${city.lat},${city.lon}`);
+});
+
+test('Google Maps transit never passes missing or invalid coordinates as a selected route', () => {
+  for (const from of [{ name: 'Unknown' }, { lat: null, lon: 0 }, { lat: 91, lon: 0 }, { lat: 0, lon: Infinity }, { lat: '0', lon: 0 }]) {
+    const link = providerLinks(from, { lat: 40, lon: 10 }, '2026-12-09').find(link => link.id === 'google-transit');
+    const url = new URL(link.url);
+    assert.equal(url.searchParams.has('origin'), false);
+    assert.equal(url.searchParams.has('destination'), false);
+    assert.equal(link.prefilled, false);
+    assert.match(link.note, /Enter your route/);
+  }
 });
 
 test('invalid dates and missing airports never form broken prefilled flight links', () => {

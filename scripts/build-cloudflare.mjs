@@ -5,10 +5,12 @@
  */
 import { build } from 'esbuild';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gzipSync } from 'node:zlib';
+import { build as buildFrontend } from 'vite';
+import { inside, readConfiguration, sha256, sourceFingerprint, parseHeaders, serveBundled, uploadMetadata } from './cloudflare-package.mjs';
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const OUT = join(ROOT, 'worker', '.build');
@@ -28,6 +30,7 @@ export function assetHash(bytes, filename) {
 
 export function collectAssets(directory = join(ROOT, 'dist')) {
   const root = resolve(directory);
+  if (existsSync(root) && lstatSync(root).isSymbolicLink()) throw new Error('Symlinked asset directories are not allowed.');
   if (!existsSync(join(root, 'index.html'))) throw new Error('Run npm run build before packaging Cloudflare.');
   const assets = [];
   function walk(current) {
@@ -56,7 +59,7 @@ function checkedSize(bytes, label) {
   return { rawBytes: bytes.length, gzipBytes, limitBytes: FREE_WORKER_GZIP_LIMIT };
 }
 
-function fallbackSource(assets) {
+function fallbackSource(assets, rules) {
   const table = Object.fromEntries(assets.map((asset) => {
     const bytes = readFileSync(asset.localPath);
     const text = /^(text\/|application\/(json|manifest\+json))/.test(asset.mime) || asset.mime === 'image/svg+xml';
@@ -64,45 +67,72 @@ function fallbackSource(assets) {
   }));
   return `import api from '../../worker/index.js';
 const assets = ${JSON.stringify(table)};
-function serve(request) {
-  if (!['GET','HEAD'].includes(request.method)) return new Response('Method not allowed', {status:405,headers:{allow:'GET, HEAD'}});
-  const path = new URL(request.url).pathname;
-  const file = assets[path] || (path === '/' || (!path.startsWith('/assets/') && !path.split('/').pop().includes('.')) ? assets['/index.html'] : null);
-  if (!file) return new Response('Not found',{status:404});
-  const headers = {'content-type':file.mime,'x-content-type-options':'nosniff','x-frame-options':'DENY','referrer-policy':'strict-origin-when-cross-origin','etag':file.etag,'cache-control':path.startsWith('/assets/')?'public, max-age=31536000, immutable':'public, max-age=0, must-revalidate'};
-  if (request.headers.get('if-none-match') === file.etag) return new Response(null,{status:304,headers});
-  const body = request.method === 'HEAD' ? null : file.binary ? Uint8Array.from(atob(file.body),c=>c.charCodeAt(0)) : file.body;
-  return new Response(body,{headers});
-}
-export default { fetch(request,env) { return new URL(request.url).pathname.startsWith('/api/') ? api.fetch(request,env) : serve(request); } };
+const rules = ${JSON.stringify(rules)};
+${serveBundled.toString()}
+export default { fetch(request,env,ctx) { return new URL(request.url).pathname.startsWith('/api/') ? api.fetch(request,env,ctx) : serveBundled(request,assets,rules); } };
 `;
 }
 
-export async function buildCloudflare({ bundledAssets = false } = {}) {
-  mkdirSync(OUT, { recursive: true });
-  const assets = collectAssets();
+export async function buildCloudflare({ bundledAssets = false, root = ROOT, frontend = true } = {}) {
+  const out = inside(root, 'worker/.build');
+  const configuration = readConfiguration(root);
+  const snapshotPath = join(root, 'src', 'data', 'edge-network.json');
+  if (!existsSync(snapshotPath)) throw new Error('Published timetable snapshot is missing. Run npm run data:edge before building or testing a clean checkout.');
+  const snapshot = JSON.parse(readFileSync(snapshotPath, 'utf8'));
+  if (!snapshot.generatedAt || !Array.isArray(snapshot.sources) || !snapshot.sources.length) throw new Error('Invalid timetable snapshot. Run npm run data:edge -- --force.');
+  const epoch = String(snapshot.calendarEpoch);
+  const calendarStart = Date.parse(`${epoch.slice(0, 4)}-${epoch.slice(4, 6)}-${epoch.slice(6, 8)}T00:00:00Z`);
+  const tomorrow = Date.parse(new Date().toISOString().slice(0, 10)) + 86_400_000;
+  if (!Number.isInteger(snapshot.calendarDays) || snapshot.calendarDays < 1 || !Number.isFinite(calendarStart)
+    || tomorrow < calendarStart || tomorrow >= calendarStart + snapshot.calendarDays * 86_400_000
+    || !Number.isFinite(Date.parse(snapshot.generatedAt))
+    || Date.parse(snapshot.generatedAt) > Date.now() + 300_000
+    || snapshot.sources.some((source) => !Number.isFinite(Date.parse(source.retrievedAt)) || Date.parse(source.retrievedAt) > Date.now() + 300_000 || Date.now() - Date.parse(source.retrievedAt) > 7 * 86_400_000)) throw new Error('The timetable snapshot is stale or does not cover tomorrow. Run npm run data:edge -- --force.');
+  const fingerprint = sourceFingerprint(root);
+  if (frontend) await buildFrontend({ root });
+  mkdirSync(out, { recursive: true });
+  const assets = collectAssets(join(root, 'dist'));
+  const headers = readFileSync(join(root, 'dist', '_headers'), 'utf8');
+  const headerRules = parseHeaders(headers);
+  if (existsSync(join(root, 'dist', '_redirects'))) throw new Error('Static redirects require explicit support in both deployment strategies.');
   const manifest = Object.fromEntries(assets.map((asset) => [asset.path, { hash: asset.hash, size: asset.size }]));
-  const standard = await build({ entryPoints: [join(ROOT, 'worker', 'index.js')], bundle: true, format: 'esm', platform: 'browser', target: 'es2022', minify: true, write: false, legalComments: 'eof' });
+  const standard = await build({ entryPoints: [join(root, 'worker', 'index.js')], bundle: true, format: 'esm', platform: 'browser', target: 'es2022', minify: true, write: false, legalComments: 'eof' });
   const code = standard.outputFiles[0].contents;
   const size = checkedSize(code, 'API Worker');
-  writeFileSync(join(OUT, 'worker.mjs'), code);
-  writeFileSync(join(OUT, 'asset-manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
-  // This file contains public assets and local paths only, never provider credentials.
-  writeFileSync(join(OUT, 'asset-files.json'), JSON.stringify(assets, null, 2) + '\n');
-  const configuration = JSON.parse(readFileSync(join(ROOT, 'wrangler.jsonc'), 'utf8'));
-  const summary = { name: configuration.name, compatibilityDate: configuration.compatibility_date, assetCount: assets.length,
+  const files = assets.map(({ localPath, ...asset }) => {
+    const packagePath = 'assets/' + asset.path.slice(1);
+    const destination = inside(out, packagePath);
+    mkdirSync(dirname(destination), { recursive: true });
+    const bytes = readFileSync(localPath);
+    writeFileSync(destination, bytes);
+    return { ...asset, packagePath, sha256: sha256(bytes) };
+  });
+  const buildId = sha256(fingerprint + sha256(code) + JSON.stringify(manifest));
+  const summary = { schemaVersion: 2, name: configuration.name, compatibilityDate: configuration.compatibility_date, buildId, sourceFingerprint: fingerprint, assetCount: assets.length,
     assetBytes: assets.reduce((sum, asset) => sum + asset.size, 0), standard: size, assets: assets.map(({ path, size, mime }) => ({ path, size, mime })) };
+  const packageFiles = { 'worker.mjs': code, 'asset-manifest.json': JSON.stringify(manifest, null, 2) + '\n',
+    'asset-files.json': JSON.stringify(files, null, 2) + '\n', 'worker-metadata.json': JSON.stringify(uploadMetadata(configuration, headers, buildId), null, 2) + '\n',
+    'headers.json': JSON.stringify(headerRules, null, 2) + '\n' };
   if (bundledAssets) {
-    const fallback = await build({ stdin: { contents: fallbackSource(assets), resolveDir: join(ROOT, 'worker', '.build'), sourcefile: 'fallback-entry.js' }, bundle: true, format: 'esm', platform: 'browser', target: 'es2022', minify: true, write: false, legalComments: 'eof' });
+    const frozenAssets = files.map((asset) => ({ ...asset, localPath: inside(out, asset.packagePath) }));
+    const fallback = await build({ stdin: { contents: fallbackSource(frozenAssets, headerRules), resolveDir: out, sourcefile: 'fallback-entry.js' }, bundle: true, format: 'esm', platform: 'browser', target: 'es2022', minify: true, write: false, legalComments: 'eof' });
     const fallbackBytes = fallback.outputFiles[0].contents;
     summary.bundled = checkedSize(fallbackBytes, 'Worker with bundled public assets');
-    writeFileSync(join(OUT, 'worker-bundled.mjs'), fallbackBytes);
-    writeFileSync(join(OUT, 'wrangler-bundled.json'), JSON.stringify({ name: configuration.name, main: './worker-bundled.mjs', compatibility_date: configuration.compatibility_date, observability: { enabled: false } }, null, 2) + '\n');
+    packageFiles['worker-bundled.mjs'] = fallbackBytes;
+    packageFiles['worker-bundled-metadata.json'] = JSON.stringify(uploadMetadata(configuration, headers, buildId, true), null, 2) + '\n';
+    const { assets: ignoredAssets, $schema: ignoredSchema, ...workerConfig } = configuration;
+    packageFiles['wrangler-bundled.json'] = JSON.stringify({ ...workerConfig, main: './worker-bundled.mjs', vars: { ...configuration.vars, BUILD_ID: buildId } }, null, 2) + '\n';
   }
-  writeFileSync(join(OUT, 'package-summary.json'), JSON.stringify(summary, null, 2) + '\n');
+  if (sourceFingerprint(root) !== fingerprint) throw new Error('Deployment sources changed during packaging. Run the build again after edits finish.');
+  summary.integrity = Object.fromEntries(Object.entries(packageFiles).map(([path, bytes]) => [path, sha256(bytes)]));
+  for (const [path, bytes] of Object.entries(packageFiles)) writeFileSync(join(out, path), bytes);
+  // The summary is the commit marker: partially written packages fail integrity checks.
+  writeFileSync(join(out, 'package-summary.json'), JSON.stringify(summary, null, 2) + '\n');
   return summary;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  buildCloudflare({ bundledAssets: process.argv.includes('--bundled-assets') }).then((summary) => console.log(JSON.stringify(summary, null, 2))).catch((error) => { console.error(error.message); process.exitCode = 1; });
+  const args = process.argv.slice(2);
+  if (args.some((arg) => arg !== '--bundled-assets') || args.length > 1) { console.error('Usage: node scripts/build-cloudflare.mjs [--bundled-assets]'); process.exitCode = 1; }
+  else buildCloudflare({ bundledAssets: args.includes('--bundled-assets') }).then((summary) => console.log(JSON.stringify(summary, null, 2))).catch((error) => { console.error(error.message); process.exitCode = 1; });
 }
